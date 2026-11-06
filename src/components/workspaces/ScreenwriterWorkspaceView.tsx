@@ -203,28 +203,28 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
   const estimatedPages = Math.max(1, Math.round(totalBlocks / 6));
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
       {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Studio Workspaces</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Studio Workspaces</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Screenwriter</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Screenwriter</span>
             <span>·</span>
-            <span className="font-mono tabular-nums">
+            <span className="font-mono tabular-nums whitespace-nowrap">
               {screenplayScenes.length} scenes · ~{estimatedPages} pages ({estimatedPages} min runtime)
             </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Screenwriter & Narrative Dramaturg Studio
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Industry-standard Fountain screenplay authoring with direct scene-to-storyboard shot extraction.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={handleExportFountainToR2}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
@@ -249,7 +249,7 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
       {/* Main 3-Column Screenwriting Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Scene Outline Navigator (3 cols) */}
-        <div className="lg:col-span-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <div className="lg:col-span-3 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
             <span className="text-xs font-semibold text-slate-900 dark:text-white">
               Scene Breakdown ({screenplayScenes.length})
@@ -293,7 +293,7 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
         </div>
 
         {/* Center: Screenplay Page Canvas (6 cols) */}
-        <div className="lg:col-span-6 space-y-4">
+        <div className="lg:col-span-6 min-w-0 space-y-4">
           {/* Formatting Element Bar */}
           <div className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-wrap items-center gap-1.5">
@@ -337,7 +337,7 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
           </div>
 
           {/* Script Manuscript Sheet */}
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 sm:p-10 shadow-2xs space-y-4 font-mono">
+          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 sm:p-10 shadow-2xs space-y-4 font-mono">
             {activeScene.blocks.map(block => {
               const isSlug = block.type === 'slugline';
               const isChar = block.type === 'character';
@@ -387,7 +387,7 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
         </div>
 
         {/* Right: AI Dramaturg & Storyboard Handoff (3 cols) */}
-        <div className="lg:col-span-3 space-y-4">
+        <div className="lg:col-span-3 min-w-0 space-y-4">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
               <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />

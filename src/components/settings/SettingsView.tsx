@@ -329,27 +329,27 @@ jobs:
         ];
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className="space-y-6 pb-12 w-full max-w-full min-w-0">
       {/* Page Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Platform Configuration</span>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Platform Configuration</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Modular Settings</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Modular Settings</span>
             <span>·</span>
-            <span>6 Situational Modules</span>
+            <span className="whitespace-nowrap">6 Situational Modules</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Modular Platform Settings
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Categorized configuration modules tailored for creative studios, remote GPU clusters, and edge deployments.
           </p>
         </div>
 
         {/* Quick Theme Pill in Header */}
-        <div className="flex items-center gap-1 p-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 self-start sm:self-center">
+        <div className="flex items-center gap-1 p-1 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-900 self-start sm:self-center shrink-0">
           <button
             onClick={() => setTheme('light')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap ${
@@ -654,9 +654,9 @@ jobs:
 
           {/* Encrypted Kaggle API Credentials Form */}
           <form onSubmit={handleSaveKaggleCreds} className="space-y-4 pt-2">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
               <h3 className="text-xs font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-                <Key className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <Key className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 <span>Encrypted Kaggle API Credentials (AES-GCM-256)</span>
               </h3>
               <span className="text-xs font-mono text-slate-500">
@@ -723,7 +723,7 @@ jobs:
               <button
                 onClick={handleTestPing}
                 disabled={isPinging}
-                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 transition-colors shrink-0"
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 transition-colors shrink-0 self-start sm:self-center"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isPinging ? 'animate-spin' : ''}`} />
                 <span>{isPinging ? 'Pinging...' : 'Ping Runtime Node'}</span>
@@ -815,7 +815,7 @@ jobs:
 
           {/* Model Registry Table */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+            <div className="px-4 sm:px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-1">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
                 Registered Studio Models ({resolvedModels.length})
               </h3>
@@ -825,9 +825,9 @@ jobs:
             </div>
             <div className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
               {resolvedModels.map(m => (
-                <div key={m.id} className="px-6 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div key={m.id} className="px-4 sm:px-6 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-2">
+                    <div className="font-semibold text-slate-900 dark:text-white flex flex-wrap items-center gap-2">
                       <span>{m.name}</span>
                       <span className="text-slate-400">·</span>
                       <span className="font-mono text-[11px] text-blue-600 dark:text-blue-400">{m.category}</span>
@@ -848,7 +848,7 @@ jobs:
 
       {/* MODULE 4: CLOUDFLARE EDGE INFRASTRUCTURE */}
       {activeSettingsModule === 'cloudflare_edge' && (
-        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-6 space-y-6">
+        <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-6 space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white">
@@ -862,10 +862,10 @@ jobs:
               href="https://aetheros-agent-platform.trileaf.workers.dev"
               target="_blank"
               rel="noreferrer"
-              className="flex items-center gap-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline"
+              className="flex items-center gap-1.5 text-xs font-mono text-blue-600 dark:text-blue-400 hover:underline break-all sm:break-normal"
             >
               <span>aetheros-agent-platform.trileaf.workers.dev</span>
-              <ExternalLink className="w-3.5 h-3.5" />
+              <ExternalLink className="w-3.5 h-3.5 shrink-0" />
             </a>
           </div>
 

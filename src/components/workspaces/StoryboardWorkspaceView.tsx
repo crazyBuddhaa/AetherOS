@@ -131,28 +131,28 @@ export const StoryboardWorkspaceView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
       {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Studio Workspaces</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Studio Workspaces</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Storyboard Studio</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Storyboard Studio</span>
             <span>·</span>
-            <span className="font-mono tabular-nums">
+            <span className="font-mono tabular-nums whitespace-nowrap">
               {storyboardShots.length} shots · {totalDuration.toFixed(1)}s total runtime
             </span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Storyboard & Sequential Shot Continuity
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Plan camera blocking, focal lengths, dialogue timing, and animatic sequences across scenes.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => {
               if (!isAnimaticPlaying) {
@@ -193,7 +193,7 @@ export const StoryboardWorkspaceView: React.FC = () => {
       {activeShot && (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
           {/* Left: Active Shot Monitor (7 cols) */}
-          <div className="lg:col-span-7 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+          <div className="lg:col-span-7 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
             <div className="relative aspect-video bg-slate-950 overflow-hidden">
               <img
                 src={activeShot.imageUrl}
@@ -202,8 +202,8 @@ export const StoryboardWorkspaceView: React.FC = () => {
                 className="w-full h-full object-cover"
               />
               {/* Measured Scrim with Dialogue & Camera Metadata */}
-              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-5 text-white space-y-1.5">
-                <div className="flex items-center justify-between text-xs font-mono text-white/80 tabular-nums">
+              <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 via-black/45 to-transparent p-4 sm:p-5 text-white space-y-1.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs font-mono text-white/80 tabular-nums">
                   <span>
                     Shot {String(activeShot.shotNumber).padStart(2, '0')} · {activeShot.sceneHeading}
                   </span>
@@ -211,20 +211,20 @@ export const StoryboardWorkspaceView: React.FC = () => {
                     {activeShot.lens} · {activeShot.cameraMovement} · {activeShot.durationSec.toFixed(1)}s
                   </span>
                 </div>
-                <p className="text-sm font-medium text-white">
+                <p className="text-xs sm:text-sm font-medium text-white">
                   {activeShot.dialogue}
                 </p>
               </div>
             </div>
 
             <div className="p-4 bg-slate-50/70 dark:bg-slate-950/50 border-t border-slate-200 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-2 text-slate-600 dark:text-slate-400 font-mono">
+              <div className="flex flex-wrap items-center gap-2 text-slate-600 dark:text-slate-400 font-mono">
                 <span>Framing: {activeShot.cameraAngle}</span>
                 <span>·</span>
                 <span>Aspect: {activeShot.aspectRatio}</span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => handleCycleShotPlate(activeShot)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 transition-colors"
@@ -244,7 +244,7 @@ export const StoryboardWorkspaceView: React.FC = () => {
           </div>
 
           {/* Right: Active Shot Continuity Editor (5 cols) */}
-          <div className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
+          <div className="lg:col-span-5 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
                 <Camera className="w-4 h-4 text-blue-600 dark:text-blue-400" />
@@ -350,7 +350,7 @@ export const StoryboardWorkspaceView: React.FC = () => {
 
       {/* Sequential Shot Strip */}
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
           <h2 className="text-sm font-semibold text-slate-900 dark:text-white">
             Sequential Storyboard Strip
           </h2>

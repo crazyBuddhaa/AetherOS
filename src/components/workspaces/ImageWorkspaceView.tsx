@@ -145,26 +145,26 @@ export const ImageWorkspaceView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
       {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Studio Workspaces</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Studio Workspaces</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Image Generation</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Image Generation</span>
             <span>·</span>
-            <span className="font-mono tabular-nums">{studioImages.length} rendered plates</span>
+            <span className="font-mono tabular-nums whitespace-nowrap">{studioImages.length} rendered plates</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Image Generation & Optical Processing Studio
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             High-resolution diffusion synthesis with Real-ESRGAN 4x spatial upscaling and BiRefNet background extraction.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             onClick={() => setActiveTab('storyboard')}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
@@ -187,7 +187,7 @@ export const ImageWorkspaceView: React.FC = () => {
         {/* Left: Prompt & Pipeline Parameters (5 cols) */}
         <form
           onSubmit={handleSynthesizeImage}
-          className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-5"
+          className="lg:col-span-5 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-5"
         >
           <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
@@ -379,7 +379,7 @@ export const ImageWorkspaceView: React.FC = () => {
         </form>
 
         {/* Right: Active Plate Inspector & Gallery (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-7 min-w-0 space-y-6">
           {activeImage && (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
               {/* Viewport Image */}
@@ -393,13 +393,13 @@ export const ImageWorkspaceView: React.FC = () => {
               </div>
 
               {/* Unboxed Metadata & Action Bar */}
-              <div className="p-5 space-y-3">
+              <div className="p-4 sm:p-5 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <h2 className="text-base font-bold text-slate-900 dark:text-white">
                       {activeImage.title}
                     </h2>
-                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums mt-1">
                       <span>{activeImage.resolution}</span>
                       <span>·</span>
                       <span>{activeImage.model}</span>
@@ -418,7 +418,7 @@ export const ImageWorkspaceView: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
                     <button
                       onClick={() => handleSendToStoryboard(activeImage)}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap"
@@ -446,7 +446,7 @@ export const ImageWorkspaceView: React.FC = () => {
 
           {/* Studio Plates Grid */}
           <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
                 Rendered Studio Plates ({studioImages.length})
               </h3>

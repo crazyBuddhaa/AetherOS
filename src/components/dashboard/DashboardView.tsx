@@ -29,7 +29,6 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
     tasks,
     approvals,
     stats,
-    runtimeConfig,
     storyboardShots,
     studioImages,
     studioVideos,
@@ -40,12 +39,17 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
     setActiveSettingsModule,
     setSelectedTaskId,
     setSelectedAgentId,
-    pingRuntime,
     decideApproval,
   } = useApp();
 
   const pendingApprovals = approvals.filter(a => a.status === 'pending');
-  const runningTasks = tasks.filter(t => t.status === 'running' || t.status === 'waiting_approval' || t.status === 'queued' || t.status === 'assigned');
+  const runningTasks = tasks.filter(
+    t =>
+      t.status === 'running' ||
+      t.status === 'waiting_approval' ||
+      t.status === 'queued' ||
+      t.status === 'assigned'
+  );
 
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
@@ -69,8 +73,9 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       title: 'Code Generation',
       category: 'engineering',
       modelLabel: 'qwen-2.5-coder-14b',
-      metricText: 'TypeScript · SQL · Python',
-      description: 'Synthesize Cloudflare Workers, D1 SQLite migrations, and PyTorch GPU modules in a split IDE.',
+      metricText: 'TS · SQL · Python',
+      description:
+        'Synthesize Cloudflare Workers, D1 SQLite migrations, and PyTorch GPU modules in a split IDE.',
       icon: Code2,
     },
     {
@@ -79,7 +84,8 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       category: 'creative',
       modelLabel: 'sdxl-lightning',
       metricText: `${studioImages.length} studio plates`,
-      description: 'High-resolution diffusion synthesis with Real-ESRGAN 4x upscaling and BiRefNet alpha extraction.',
+      description:
+        'High-resolution diffusion synthesis with Real-ESRGAN 4x upscaling and BiRefNet alpha extraction.',
       icon: ImageIcon,
     },
     {
@@ -88,25 +94,28 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       category: 'creative',
       modelLabel: 'animatediff-motion-v3',
       metricText: `${studioVideos.length} motion clips`,
-      description: 'Keyframe-conditioned temporal motion synthesis with camera rig trajectories and frame scrubbing.',
+      description:
+        'Keyframe-conditioned temporal motion synthesis with camera rig trajectories and frame scrubbing.',
       icon: Film,
     },
     {
       id: 'storyboard',
       title: 'Storyboard Studio',
       category: 'creative',
-      modelLabel: 'deepseek-r1-distill-qwen-14b',
+      modelLabel: 'deepseek-r1-14b',
       metricText: `${storyboardShots.length} sequential shots`,
-      description: 'Sequential visual narrative planning, lens & camera continuity, and animatic playback.',
+      description:
+        'Sequential visual narrative planning, lens & camera continuity, and animatic playback.',
       icon: Clapperboard,
     },
     {
       id: 'screenwriter',
       title: 'Screenwriter',
       category: 'creative',
-      modelLabel: 'deepseek-r1-distill-qwen-14b',
+      modelLabel: 'deepseek-r1-14b',
       metricText: `${screenplayScenes.length} script scenes`,
-      description: 'Fountain screenplay authoring, AI dramaturg beat expansion, and 1-click shot extraction.',
+      description:
+        'Fountain screenplay authoring, AI dramaturg beat expansion, and 1-click shot extraction.',
       icon: Feather,
     },
     {
@@ -115,7 +124,8 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       category: 'engineering',
       modelLabel: 'Multi-Agent Fleet',
       metricText: `${stats.active_agents} active agents`,
-      description: 'Interactive multi-turn reasoning console with live chain-of-thought and artifact canvas.',
+      description:
+        'Interactive multi-turn reasoning console with live chain-of-thought and artifact canvas.',
       icon: MessageSquare,
     },
   ];
@@ -141,28 +151,28 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
   ];
 
   return (
-    <div className="space-y-8 pb-12">
+    <div className="space-y-8 pb-12 w-full max-w-full min-w-0">
       {/* Top Header & Situational Mode Filter */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>AetherOS Studio</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1.5">
+            <span className="whitespace-nowrap">AetherOS Studio</span>
             <span>·</span>
-            <span>Cloudflare Workers + D1 + R2</span>
+            <span className="whitespace-nowrap">Cloudflare Workers + D1 + R2</span>
             <span>·</span>
-            <span>Distributed GPU Grid</span>
+            <span className="whitespace-nowrap">Distributed GPU Grid</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Modular Studio Workspaces
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Dedicated environments for code generation, image synthesis, video motion, storyboarding, and screenwriting.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5 min-w-0 max-w-full">
           {/* Situational Filter Segmented Control */}
-          <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+          <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 max-w-full overflow-x-auto">
             {(
               [
                 { id: 'all', label: 'All Workspaces' },
@@ -196,8 +206,8 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       </div>
 
       {/* Section 1: Dedicated Workspaces Grid */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+      <div className="space-y-3 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
           <h2 className="text-base font-bold text-slate-900 dark:text-white">
             01. Dedicated Production Workspaces
           </h2>
@@ -213,14 +223,14 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
               <div
                 key={ws.id}
                 onClick={() => setActiveTab(ws.id)}
-                className="group cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-blue-500 dark:hover:border-blue-500 transition-all flex flex-col justify-between gap-4"
+                className="group cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-blue-500 dark:hover:border-blue-500 transition-all flex flex-col justify-between gap-4 min-w-0"
               >
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
-                    <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                    <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center shrink-0">
                       <Icon className="w-4 h-4" />
                     </div>
-                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 group-hover:translate-x-0.5 transition-all" />
+                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 group-hover:translate-x-0.5 transition-all shrink-0" />
                   </div>
 
                   <div>
@@ -233,9 +243,9 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                   </div>
                 </div>
 
-                <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
-                  <span>{ws.modelLabel}</span>
-                  <span>{ws.metricText}</span>
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                  <span className="whitespace-nowrap">{ws.modelLabel}</span>
+                  <span className="whitespace-nowrap">{ws.metricText}</span>
                 </div>
               </div>
             );
@@ -244,8 +254,8 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       </div>
 
       {/* Section 2: Categorized Settings Modules Hub */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
+      <div className="space-y-3 min-w-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
           <div>
             <h2 className="text-base font-bold text-slate-900 dark:text-white">
               02. Modular Settings & Infrastructure Categories
@@ -256,7 +266,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
           </div>
           <button
             onClick={() => setActiveTab('settings')}
-            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1 self-start sm:self-center shrink-0"
           >
             <span>Open Settings Hub</span>
             <ArrowRight className="w-3.5 h-3.5" />
@@ -273,7 +283,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                   setActiveSettingsModule(mod.id);
                   setActiveTab('settings');
                 }}
-                className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-colors flex items-center justify-between gap-3 text-left"
+                className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-colors flex items-center justify-between gap-3 text-left min-w-0"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center shrink-0">
@@ -296,81 +306,83 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
       </div>
 
       {/* Section 3: Platform Telemetry & Operations Strip */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <div
           onClick={() => setActiveTab('agents')}
-          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all min-w-0"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Configured Agents</span>
-            <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 gap-2">
+            <span className="truncate">Configured Agents</span>
+            <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-1.5 font-mono tabular-nums">
+            <span className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
               {stats.active_agents}
             </span>
-            <span className="text-xs text-slate-500">/ {stats.total_agents} active</span>
+            <span className="text-[11px] sm:text-xs text-slate-500 truncate">/ {stats.total_agents} active</span>
           </div>
         </div>
 
         <div
           onClick={() => setActiveTab('tasks')}
-          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all min-w-0"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Execution Queue</span>
-            <Workflow className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 gap-2">
+            <span className="truncate">Execution Queue</span>
+            <Workflow className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-1.5 font-mono tabular-nums">
+            <span className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
               {stats.running_tasks}
             </span>
-            <span className="text-xs text-slate-500">/ {stats.total_tasks} tasks</span>
+            <span className="text-[11px] sm:text-xs text-slate-500 truncate">/ {stats.total_tasks} tasks</span>
           </div>
         </div>
 
         <div
           onClick={() => setActiveTab('approvals')}
-          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all min-w-0"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Human Approvals</span>
-            <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 gap-2">
+            <span className="truncate">Human Approvals</span>
+            <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-1.5 font-mono tabular-nums">
+            <span className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
               {stats.pending_approvals}
             </span>
-            <span className="text-xs text-slate-500">awaiting review</span>
+            <span className="text-[11px] sm:text-xs text-slate-500 truncate">awaiting</span>
           </div>
         </div>
 
         <div
           onClick={() => setActiveTab('files')}
-          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all min-w-0"
         >
-          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
-            <span>Cloudflare R2 Store</span>
-            <HardDrive className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 gap-2">
+            <span className="truncate">Cloudflare R2</span>
+            <HardDrive className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
-            <span className="text-2xl font-bold text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-1.5 font-mono tabular-nums">
+            <span className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white">
               {formatBytes(stats.storage_bytes_used)}
             </span>
-            <span className="text-xs text-slate-500">({stats.total_files} files)</span>
+            <span className="text-[11px] sm:text-xs text-slate-500 truncate">({stats.total_files})</span>
           </div>
         </div>
       </div>
 
       {/* Inline Pending Approvals Callout */}
       {pendingApprovals.length > 0 && (
-        <div className="p-5 rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 space-y-3">
+        <div className="p-4 sm:p-5 rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 space-y-3 min-w-0">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3 min-w-0">
               <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-              <div>
-                <h2 className="text-sm font-semibold text-amber-950 dark:text-amber-200 flex items-center gap-2">
-                  <span>{pendingApprovals.length} Consequential Action{pendingApprovals.length > 1 ? 's' : ''} Awaiting Authorization</span>
+              <div className="min-w-0">
+                <h2 className="text-sm font-semibold text-amber-950 dark:text-amber-200 flex flex-wrap items-center gap-2">
+                  <span>
+                    {pendingApprovals.length} Consequential Action{pendingApprovals.length > 1 ? 's' : ''} Awaiting Authorization
+                  </span>
                   <RiskBadge risk={pendingApprovals[0].risk_level} />
                 </h2>
                 <p className="text-xs text-amber-800 dark:text-amber-400 mt-0.5">
@@ -399,7 +411,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
 
       {/* Active Workflows & Agent Fleet */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-3">
+        <div className="lg:col-span-2 space-y-3 min-w-0">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold text-slate-900 dark:text-white">
               Active Distributed Workflows
@@ -433,10 +445,10 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 font-mono tabular-nums">
                         <StatusBadge status={task.status} size="sm" />
                         <span>·</span>
-                        <span>{task.agent_name || task.agent_id}</span>
+                        <span className="truncate">{task.agent_name || task.agent_id}</span>
                         <span>·</span>
                         <span>Priority: {task.priority}</span>
                       </div>
@@ -444,7 +456,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                         {task.title}
                       </h3>
                     </div>
-                    <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300 tabular-nums">
+                    <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300 tabular-nums shrink-0">
                       {task.progress_percent}%
                     </span>
                   </div>
@@ -455,7 +467,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
         </div>
 
         {/* Agent Fleet Summary */}
-        <div className="space-y-3">
+        <div className="space-y-3 min-w-0">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-bold text-slate-900 dark:text-white">
               Specialized Studio Agents

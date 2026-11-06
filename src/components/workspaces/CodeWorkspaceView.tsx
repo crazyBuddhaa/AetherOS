@@ -381,33 +381,33 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
   const lines = activeFile.content.split('\n');
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
       {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Studio Workspaces</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Studio Workspaces</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Code Generation</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Code Generation</span>
             <span>·</span>
-            <span className="font-mono tabular-nums">{files.length} workspace files</span>
+            <span className="font-mono tabular-nums whitespace-nowrap">{files.length} workspace files</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Code Generation & Systems Workbench
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Author, refactor, and benchmark TypeScript Workers, D1 SQLite migrations, and PyTorch GPU pipelines.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs">
-            <Cpu className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-            <span className="text-slate-500 dark:text-slate-400">Model:</span>
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs max-w-full">
+            <Cpu className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <span className="text-slate-500 dark:text-slate-400 shrink-0">Model:</span>
             <select
               value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
-              className="font-mono font-semibold text-slate-900 dark:text-white bg-transparent focus:outline-none cursor-pointer"
+              className="font-mono font-semibold text-slate-900 dark:text-white bg-transparent focus:outline-none cursor-pointer truncate"
             >
               <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B</option>
               <option value="deepseek-r1-distill-qwen-14b">DeepSeek R1 Distill 14B</option>
@@ -481,7 +481,7 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
       {/* Main 3-Column IDE Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left Column: File Explorer (3 cols) */}
-        <div className="lg:col-span-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+        <div className="lg:col-span-3 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
               <FolderGit2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
@@ -535,10 +535,10 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
         </div>
 
         {/* Center + Right: Code Editor & Diagnostics (9 cols) */}
-        <div className="lg:col-span-9 space-y-4">
+        <div className="lg:col-span-9 min-w-0 space-y-4">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
             {/* Editor Header */}
-            <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 flex items-center justify-between gap-4">
+            <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0">
                 <Code2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
                 <span className="font-mono text-xs font-semibold text-slate-900 dark:text-white truncate">
@@ -578,7 +578,7 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
                 value={activeFile.content}
                 onChange={e => handleCodeChange(e.target.value)}
                 spellCheck={false}
-                className="w-full p-4 bg-transparent text-slate-100 font-mono text-xs leading-6 focus:outline-none resize-none overflow-x-auto"
+                className="w-full min-w-0 p-4 bg-transparent text-slate-100 font-mono text-xs leading-6 focus:outline-none resize-none overflow-x-auto"
                 rows={Math.max(16, lines.length)}
               />
             </div>
@@ -586,7 +586,7 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
 
           {/* Compiler & Compute Verification Output */}
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2.5">
-            <div className="flex items-center justify-between text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
                 <Terminal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span>Verification & Execution Console</span>

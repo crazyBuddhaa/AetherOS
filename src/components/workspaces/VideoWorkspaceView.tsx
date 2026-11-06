@@ -139,28 +139,28 @@ export const VideoWorkspaceView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
       {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span>Studio Workspaces</span>
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span className="whitespace-nowrap">Studio Workspaces</span>
             <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium">Video Generation</span>
+            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Video Generation</span>
             <span>·</span>
-            <span className="font-mono tabular-nums">{studioVideos.length} motion clips</span>
+            <span className="font-mono tabular-nums whitespace-nowrap">{studioVideos.length} motion clips</span>
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Video Generation & Temporal Motion Studio
           </h1>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
             Keyframe-conditioned temporal synthesis, camera rig trajectories, and frame-accurate animatic playback.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-slate-600 dark:text-slate-400 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
-          <Film className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-          <span>Engine: AnimateDiff Motion v3 · 12 GB VRAM</span>
+        <div className="flex items-center gap-2 text-xs font-mono text-slate-600 dark:text-slate-400 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 self-start lg:self-center">
+          <Film className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+          <span className="truncate">Engine: AnimateDiff Motion v3 · 12 GB VRAM</span>
         </div>
       </div>
 
@@ -169,11 +169,11 @@ export const VideoWorkspaceView: React.FC = () => {
         {/* Left: Motion & Camera Trajectory Controls (5 cols) */}
         <form
           onSubmit={handleSynthesizeVideo}
-          className="lg:col-span-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-5"
+          className="lg:col-span-5 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-5"
         >
-          <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 dark:border-slate-800 pb-3">
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
-              <Camera className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <Camera className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
               <span>Temporal & Camera Rig Configuration</span>
             </div>
             <span className="text-[11px] font-mono text-slate-500 tabular-nums">
@@ -333,7 +333,7 @@ export const VideoWorkspaceView: React.FC = () => {
         </form>
 
         {/* Right: Temporal Player & Sequence Library (7 cols) */}
-        <div className="lg:col-span-7 space-y-6">
+        <div className="lg:col-span-7 min-w-0 space-y-6">
           {activeClip && (
             <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
               {/* Motion Preview Viewport */}

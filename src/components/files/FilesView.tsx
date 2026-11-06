@@ -143,12 +143,12 @@ export const FilesView: React.FC = () => {
         </p>
 
         {/* Optional Task Association */}
-        <div className="mt-3 flex items-center justify-center gap-2 text-xs text-slate-500">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 text-xs text-slate-500 max-w-full">
           <span>Associate with Workflow:</span>
           <select
             value={selectedTaskAssociation}
             onChange={e => setSelectedTaskAssociation(e.target.value)}
-            className="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200"
+            className="text-xs px-2 py-1 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-200 max-w-full sm:max-w-xs truncate"
           >
             <option value="">None (General Storage)</option>
             {tasks.map(t => (

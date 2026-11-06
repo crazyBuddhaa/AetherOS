@@ -59,7 +59,7 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#F8FAFC] dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100 transition-colors">
+    <div className="min-h-screen w-full max-w-[100vw] overflow-x-hidden flex flex-col bg-[#F8FAFC] dark:bg-[#0B0F17] text-slate-900 dark:text-slate-100 transition-colors">
       {/* Top Bar Navigation */}
       <TopBar
         onNewTaskClick={() => handleOpenNewTask()}
@@ -67,10 +67,10 @@ const AppContent: React.FC = () => {
       />
 
       {/* Split Studio Shell: Sidebar + Dedicated Workspace Viewport */}
-      <div className="flex-1 flex max-w-[1600px] w-full mx-auto">
+      <div className="flex-1 flex w-full max-w-[1600px] mx-auto min-w-0">
         <Sidebar />
 
-        <main className="flex-1 min-w-0 px-4 sm:px-6 lg:px-8 pt-6 pb-12">
+        <main className="flex-1 min-w-0 w-full max-w-full overflow-x-hidden px-4 sm:px-6 lg:px-8 pt-5 pb-12">
           {activeTab === 'dashboard' && (
             <DashboardView onNewTaskClick={() => handleOpenNewTask()} />
           )}
@@ -98,7 +98,7 @@ const AppContent: React.FC = () => {
 
       {/* Toast Notification */}
       {notification && (
-        <div className="fixed bottom-6 right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium border transition-all bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-slate-200 dark:border-slate-800">
+        <div className="fixed bottom-4 right-4 left-4 sm:left-auto sm:bottom-6 sm:right-6 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-lg shadow-lg text-xs font-medium border transition-all bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-slate-200 dark:border-slate-800 max-w-md">
           {notification.type === 'success' && (
             <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
           )}
@@ -108,7 +108,7 @@ const AppContent: React.FC = () => {
           {notification.type === 'info' && (
             <Info className="w-4 h-4 text-blue-500 shrink-0" />
           )}
-          <span>{notification.message}</span>
+          <span className="truncate">{notification.message}</span>
         </div>
       )}
 
