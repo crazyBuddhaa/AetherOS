@@ -2262,5 +2262,120 @@ describe('6. Web Intelligence Agent & Reconnaissance Engine (worker/web-intellig
   });
 });
 
+describe('7. Google AI Studio Coding Workspace, Git & MCP Tools Engine', () => {
+  it('reads repo tree and blocks directory traversal attempts outside workspace', async () => {
+    const { getRepoTree, readRepoFile } = await import('../worker/repo-git-service.ts');
+
+    const tree = await getRepoTree(2);
+    assert.ok(Array.isArray(tree));
+    assert.ok(tree.some((n) => n.name === 'src' && n.type === 'dir'));
+    assert.ok(tree.some((n) => n.name === 'package.json' && n.type === 'file'));
+
+    // Read valid file
+    const file = await readRepoFile('package.json');
+    assert.equal(file.path, 'package.json');
+    assert.ok(file.content.includes('react-example'));
+    assert.equal(file.language, 'json');
+
+    // Block path traversal attempt
+    await assert.rejects(
+      async () => {
+        await readRepoFile('../../etc/passwd');
+      },
+      /Access denied/
+    );
+  });
+
+  it('inspects git status and uncommitted working tree diff', async () => {
+    const { getGitStatus, getGitDiff } = await import('../worker/repo-git-service.ts');
+
+    const status = await getGitStatus();
+    assert.ok(typeof status.branch === 'string');
+    assert.ok(Array.isArray(status.modified));
+    assert.ok(Array.isArray(status.staged));
+
+    const diff = await getGitDiff();
+    assert.ok(typeof diff.diff === 'string');
+  });
+
+  it('discovers connected MCP servers and executes MCP tools via standard JSON-RPC dispatch', async () => {
+    const { mcpManager } = await import('../worker/mcp-service.ts');
+
+    const servers = mcpManager.getServers();
+    assert.ok(servers.length >= 4);
+    assert.ok(servers.some((s) => s.id === 'mcp_filesystem'));
+    assert.ok(servers.some((s) => s.id === 'mcp_git_ops'));
+
+    const tools = mcpManager.getAllTools();
+    assert.ok(tools.some((t) => t.tool.name === 'read_file'));
+    assert.ok(tools.some((t) => t.tool.name === 'git_status'));
+    assert.ok(tools.some((t) => t.tool.name === 'd1_list_migrations'));
+
+    // Execute read_file tool via MCP manager
+    const execRes = await mcpManager.executeTool('read_file', { path: 'package.json' });
+    assert.equal(execRes.success, true);
+    assert.ok(execRes.result.content.includes('react-example'));
+
+    // Execute d1_list_migrations via MCP manager
+    const d1Res = await mcpManager.executeTool('d1_list_migrations', {});
+    assert.equal(d1Res.success, true);
+    assert.ok(Array.isArray(d1Res.result.migrations));
+  });
+
+  it('serves AI Studio endpoints /api/repo, /api/mcp, and /api/ai/chat over HTTP', async () => {
+    const app = await createAetherApp({ disableVite: true });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as any).port;
+
+    try {
+      // 1. Repo Tree
+      const treeRes = await fetch(`http://127.0.0.1:${port}/api/repo/tree?depth=2`);
+      assert.equal(treeRes.status, 200);
+      const treeData: any = await treeRes.json();
+      assert.equal(treeData.success, true);
+      assert.ok(Array.isArray(treeData.tree));
+
+      // 2. MCP Tools
+      const mcpRes = await fetch(`http://127.0.0.1:${port}/api/mcp/tools`);
+      assert.equal(mcpRes.status, 200);
+      const mcpData: any = await mcpRes.json();
+      assert.equal(mcpData.success, true);
+      assert.ok(mcpData.tools.length >= 4);
+
+      // 3. AI Models
+      const modelsRes = await fetch(`http://127.0.0.1:${port}/api/ai/models`);
+      assert.equal(modelsRes.status, 200);
+      const modelsData: any = await modelsRes.json();
+      assert.equal(modelsData.success, true);
+      assert.ok(modelsData.models.some((m: any) => m.id === 'gemini-3.8-flash'));
+
+      // 4. AI Studio Chat Dispatch
+      const chatRes = await fetch(`http://127.0.0.1:${port}/api/ai/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: 'What is the current git status of this repository?',
+          model: 'gemini-3.8-flash',
+          currentFile: {
+            path: 'src/App.tsx',
+            content: '// test content',
+            language: 'typescript',
+          },
+        }),
+      });
+      assert.equal(chatRes.status, 200);
+      const chatData: any = await chatRes.json();
+      assert.equal(chatData.success, true);
+      assert.ok(chatData.response);
+      assert.ok(chatData.git_status);
+      assert.ok(chatData.tool_calls_executed);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+
 
 

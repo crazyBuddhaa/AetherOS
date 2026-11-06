@@ -778,6 +778,113 @@ class ApiClient {
       body: JSON.stringify(params),
     });
   }
+
+  // --- REPO & GIT OPERATIONS ---
+  async getRepoTree(depth = 4): Promise<any[]> {
+    const res = await this.request<{ success: boolean; tree: any[] }>(`/api/repo/tree?depth=${depth}`);
+    return res.tree || [];
+  }
+
+  async readRepoFile(filePath: string): Promise<{
+    path: string;
+    content: string;
+    size: number;
+    isBinary: boolean;
+    language: string;
+  }> {
+    const res = await this.request<{ success: boolean; file: any }>(
+      `/api/repo/file?path=${encodeURIComponent(filePath)}`
+    );
+    return res.file;
+  }
+
+  async writeRepoFile(filePath: string, content: string): Promise<{ success: boolean; path: string; size: number }> {
+    return this.request('/api/repo/file', {
+      method: 'POST',
+      body: JSON.stringify({ path: filePath, content }),
+    });
+  }
+
+  async getGitStatus(): Promise<any> {
+    const res = await this.request<{ success: boolean; status: any }>('/api/repo/git/status');
+    return res.status;
+  }
+
+  async getGitDiff(filePath?: string): Promise<{ diff: string }> {
+    const url = filePath ? `/api/repo/git/diff?path=${encodeURIComponent(filePath)}` : '/api/repo/git/diff';
+    return this.request(url);
+  }
+
+  async commitGit(message: string, stageAll = true): Promise<any> {
+    return this.request('/api/repo/git/commit', {
+      method: 'POST',
+      body: JSON.stringify({ message, stage_all: stageAll }),
+    });
+  }
+
+  async pushGit(params: { branch?: string; remote?: string; token?: string }): Promise<any> {
+    return this.request('/api/repo/git/push', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  // --- MODEL CONTEXT PROTOCOL (MCP) ---
+  async getMcpServers(): Promise<any[]> {
+    const res = await this.request<{ success: boolean; servers: any[] }>('/api/mcp/servers');
+    return res.servers || [];
+  }
+
+  async addMcpServer(params: { name: string; description: string; endpoint: string; transport?: string }): Promise<any> {
+    return this.request('/api/mcp/servers', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async toggleMcpServer(id: string, enabled: boolean): Promise<any> {
+    return this.request(`/api/mcp/servers/${id}/toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async removeMcpServer(id: string): Promise<any> {
+    return this.request(`/api/mcp/servers/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async getMcpTools(): Promise<any[]> {
+    const res = await this.request<{ success: boolean; tools: any[] }>('/api/mcp/tools');
+    return res.tools || [];
+  }
+
+  async executeMcpTool(tool: string, args: Record<string, any> = {}): Promise<any> {
+    return this.request('/api/mcp/tools/execute', {
+      method: 'POST',
+      body: JSON.stringify({ tool, arguments: args }),
+    });
+  }
+
+  // --- GOOGLE AI STUDIO CODING ASSISTANT ---
+  async getAiModels(): Promise<{ models: any[]; gemini_api_key_configured: boolean }> {
+    return this.request('/api/ai/models');
+  }
+
+  async sendAiStudioChat(params: {
+    message: string;
+    model?: string;
+    externalApi?: any;
+    currentFile?: any;
+    enabledMcpServers?: string[];
+    history?: any[];
+  }): Promise<any> {
+    return this.request('/api/ai/chat', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
 }
 
 export const apiClient = new ApiClient();

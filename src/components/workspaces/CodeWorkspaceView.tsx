@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import { apiClient } from '../../services/api-client';
 import {
@@ -14,843 +14,1242 @@ import {
   Sparkles,
   RefreshCw,
   FolderGit2,
-  ShieldAlert,
   ShieldCheck,
   AlertTriangle,
   ExternalLink,
+  GitBranch,
+  GitCommit,
+  UploadCloud,
+  FileText,
+  Folder,
+  FolderOpen,
+  ChevronRight,
+  ChevronDown,
+  Layers,
+  Settings,
+  Send,
+  Sliders,
+  X,
+  Maximize2,
+  Minimize2,
+  Save,
+  MessageSquare,
+  Bot,
+  User,
+  Wrench,
+  Search,
+  CheckCircle2,
+  AlertCircle,
+  Database,
+  Globe,
+  Key,
 } from 'lucide-react';
 
-interface CodeStudioFile {
-  id: string;
-  filename: string;
-  language: 'typescript' | 'python' | 'sql' | 'rust';
-  description: string;
+interface OpenTab {
+  path: string;
+  name: string;
   content: string;
-  taskId?: string;
+  language: string;
+  isModified?: boolean;
 }
 
-const INITIAL_CODE_FILES: CodeStudioFile[] = [
-  {
-    id: 'code_1',
-    filename: 'worker_lease_router.ts',
-    language: 'typescript',
-    description: 'Cloudflare Worker atomic task claim & lease verification handler',
-    content: `import type { Env, Task } from './worker/types';
-
-export async function claimNextAvailableTask(
-  env: Env,
-  workerId: string,
-  availableVramMb: number
-): Promise<Task | null> {
-  const nowIso = new Date().toISOString();
-  const leaseExpiresIso = new Date(Date.now() + 90_000).toISOString();
-
-  // Select highest-priority queued task matching node VRAM constraints
-  const candidate = await env.DB.prepare(\`
-    SELECT * FROM tasks
-    WHERE status = 'queued'
-      AND COALESCE(json_extract(input_payload, '$.min_vram_mb'), 0) <= ?
-    ORDER BY
-      CASE priority
-        WHEN 'critical' THEN 1
-        WHEN 'high' THEN 2
-        WHEN 'medium' THEN 3
-        ELSE 4
-      END ASC,
-      created_at ASC
-    LIMIT 1
-  \`)
-    .bind(availableVramMb)
-    .first<Task>();
-
-  if (!candidate) return null;
-
-  const updated = await env.DB.prepare(\`
-    UPDATE tasks
-    SET status = 'assigned',
-        claimed_by_worker = ?,
-        lease_expires_at = ?,
-        attempt_count = COALESCE(attempt_count, 0) + 1,
-        updated_at = ?
-    WHERE id = ? AND status = 'queued'
-  \`)
-    .bind(workerId, leaseExpiresIso, nowIso, candidate.id)
-    .run();
-
-  return updated.meta?.changes === 1
-    ? { ...candidate, status: 'assigned', claimed_by_worker: workerId, lease_expires_at: leaseExpiresIso }
-    : null;
-}`,
-  },
-  {
-    id: 'code_2',
-    filename: '0005_workspace_artifacts_index.sql',
-    language: 'sql',
-    description: 'D1 SQLite composite indexing migration for studio workspace artifacts',
-    content: `-- Migration: 0005_workspace_artifacts_index.sql
--- Target: Cloudflare D1 (SQLite 3.45+)
-
-CREATE INDEX IF NOT EXISTS idx_files_task_created
-  ON files(task_id, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_tasks_status_priority
-  ON tasks(status, priority, created_at ASC);
-
-CREATE INDEX IF NOT EXISTS idx_activity_logs_category_time
-  ON activity_logs(category, created_at DESC);`,
-  },
-  {
-    id: 'code_3',
-    filename: 'kaggle_dual_t4_inference.py',
-    language: 'python',
-    description: 'PyTorch tensor-parallel inference runner for Dual NVIDIA Tesla T4 (32GB)',
-    content: `import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-def load_sharded_coder_model(model_id: str = "Qwen/Qwen2.5-Coder-14B-Instruct"):
-    assert torch.cuda.device_count() >= 1, "CUDA GPU required for local inference"
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id,
-        torch_dtype=torch.float16,
-        device_map="auto",
-        max_memory={0: "14GiB", 1: "14GiB"},
-    )
-    return tokenizer, model
-
-def synthesize_code(prompt: str, max_new_tokens: int = 1024) -> str:
-    tokenizer, model = load_sharded_coder_model()
-    messages = [
-        {"role": "system", "content": "You are a principal systems engineer."},
-        {"role": "user", "content": prompt},
-    ]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer([text], return_tensors="pt").to(model.device)
-    with torch.inference_mode():
-        generated = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
-    return tokenizer.decode(generated[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)`,
-  },
-];
-
-const REFERENCE_BLUEPRINTS = [
-  {
-    label: 'Rate-Limited Worker Middleware',
-    language: 'typescript' as const,
-    filename: 'rate_limiter_edge.ts',
-    description: 'Reference Blueprint: Sliding-window rate limiter middleware for Cloudflare Workers',
-    code: `import type { Env } from './worker/types';
-
-export interface RateLimitResult {
-  allowed: boolean;
-  remaining: number;
-  resetAtEpochMs: number;
+interface ChatMessage {
+  id: string;
+  sender: 'user' | 'assistant';
+  content: string;
+  model?: string;
+  provider?: string;
+  toolCalls?: Array<{
+    name: string;
+    args: Record<string, any>;
+    result: any;
+    error?: string;
+  }>;
+  timestamp: string;
 }
-
-const windowBuckets = new Map<string, { count: number; expiresAt: number }>();
-
-export function checkSlidingWindowRateLimit(
-  clientKey: string,
-  limitPerMinute: number = 120
-): RateLimitResult {
-  const now = Date.now();
-  const bucket = windowBuckets.get(clientKey);
-
-  if (!bucket || bucket.expiresAt <= now) {
-    const expiresAt = now + 60_000;
-    windowBuckets.set(clientKey, { count: 1, expiresAt });
-    return { allowed: true, remaining: limitPerMinute - 1, resetAtEpochMs: expiresAt };
-  }
-
-  if (bucket.count >= limitPerMinute) {
-    return { allowed: false, remaining: 0, resetAtEpochMs: bucket.expiresAt };
-  }
-
-  bucket.count += 1;
-  return {
-    allowed: true,
-    remaining: Math.max(0, limitPerMinute - bucket.count),
-    resetAtEpochMs: bucket.expiresAt,
-  };
-}`,
-  },
-  {
-    label: 'R2 Verified Artifact Streamer',
-    language: 'typescript' as const,
-    filename: 'r2_stream_archive.ts',
-    description: 'Reference Blueprint: Cloudflare R2 uploader with SHA-256 digest verification',
-    code: `import type { R2Bucket, R2Object } from './worker/types';
-
-export async function putVerifiedArtifactStream(
-  bucket: R2Bucket,
-  r2Key: string,
-  payloadText: string,
-  contentType: string = 'application/json'
-): Promise<{ object: R2Object; sha256Hex: string }> {
-  const bytes = new TextEncoder().encode(payloadText);
-  const digestBuffer = await crypto.subtle.digest('SHA-256', bytes);
-  const sha256Hex = Array.from(new Uint8Array(digestBuffer))
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-
-  const object = await bucket.put(r2Key, bytes.buffer as ArrayBuffer, {
-    httpMetadata: { contentType },
-    customMetadata: { sha256: sha256Hex, verified_at: new Date().toISOString() },
-  });
-
-  return { object, sha256Hex };
-}`,
-  },
-  {
-    label: 'D1 Telemetry Aggregation View',
-    language: 'sql' as const,
-    filename: '0006_worker_telemetry_view.sql',
-    description: 'Reference Blueprint: Normalized D1 SQLite view summarizing worker GPU efficiency',
-    code: `-- Migration: 0006_worker_telemetry_view.sql
--- Aggregates per-worker task throughput and average step execution latency
-
-CREATE VIEW IF NOT EXISTS v_worker_efficiency_summary AS
-SELECT
-  w.id AS worker_id,
-  w.name AS worker_name,
-  w.provider AS provider,
-  w.gpu_model AS gpu_model,
-  w.gpu_count AS gpu_count,
-  w.vram_mb AS vram_mb,
-  w.status AS current_status,
-  w.total_tasks_completed AS completed_tasks,
-  COUNT(t.id) AS active_assigned_tasks,
-  ROUND(AVG(COALESCE(w.gpu_utilization_percent, 0)), 1) AS avg_gpu_utilization_pct
-FROM compute_workers w
-LEFT JOIN tasks t
-  ON t.claimed_by_worker = w.id
-  AND t.status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
-WHERE w.is_revoked = 0
-GROUP BY w.id;`,
-  },
-];
 
 export const CodeWorkspaceView: React.FC = () => {
-  const { submitTask, uploadFile, showNotification, workers, tasks } = useApp();
+  const { showNotification } = useApp();
 
-  const [files, setFiles] = useState<CodeStudioFile[]>(INITIAL_CODE_FILES);
-  const [selectedFileId, setSelectedFileId] = useState<string>(INITIAL_CODE_FILES[0].id);
-  const [selectedModel, setSelectedModel] = useState<string>('qwen-2.5-coder-14b');
-  const [promptInput, setPromptInput] = useState<string>('');
-  const [isSynthesizing, setIsSynthesizing] = useState<boolean>(false);
-  const [isDispatching, setIsDispatching] = useState<boolean>(false);
-  const [isSavingR2, setIsSavingR2] = useState<boolean>(false);
-  const [copied, setCopied] = useState<boolean>(false);
-  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
-  const [executionOutput, setExecutionOutput] = useState<string[]>([
-    'Workspace initialized. Select a file to edit, load a reference blueprint, or dispatch a real synthesis task to the GPU grid.',
+  // --- Layout State ---
+  const [layoutMode, setLayoutMode] = useState<'split' | 'editor' | 'chat'>('split');
+  const [activeLeftTab, setActiveLeftTab] = useState<'files' | 'git' | 'mcp'>('files');
+
+  // --- Repository Files State ---
+  const [repoTree, setRepoTree] = useState<any[]>([]);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['src', 'worker']));
+  const [openTabs, setOpenTabs] = useState<OpenTab[]>([]);
+  const [activeTabPath, setActiveTabPath] = useState<string>('src/App.tsx');
+  const [isLoadingFile, setIsLoadingFile] = useState(false);
+  const [isSavingFile, setIsSavingFile] = useState(false);
+
+  // --- Git State ---
+  const [gitStatus, setGitStatus] = useState<any>({
+    branch: 'main',
+    clean: true,
+    staged: [],
+    modified: [],
+    untracked: [],
+    ahead: 0,
+    behind: 0,
+  });
+  const [gitDiff, setGitDiff] = useState<string>('');
+  const [isGitDiffOpen, setIsGitDiffOpen] = useState(false);
+  const [isPushModalOpen, setIsPushModalOpen] = useState(false);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [githubToken, setGithubToken] = useState('');
+  const [isCommittingOrPushing, setIsCommittingOrPushing] = useState(false);
+
+  // --- Model & External API State ---
+  const [models, setModels] = useState<any[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
+  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [externalEndpoint, setExternalEndpoint] = useState('');
+  const [externalApiKey, setExternalApiKey] = useState('');
+  const [externalModelName, setExternalModelName] = useState('gpt-4o');
+  const [temperature, setTemperature] = useState(0.4);
+  const [maxTokens, setMaxTokens] = useState(3000);
+
+  // --- MCP (Model Context Protocol) State ---
+  const [mcpServers, setMcpServers] = useState<any[]>([]);
+  const [mcpTools, setMcpTools] = useState<any[]>([]);
+  const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
+  const [newMcpName, setNewMcpName] = useState('');
+  const [newMcpEndpoint, setNewMcpEndpoint] = useState('');
+
+  // --- AI Studio Chat Assistant State ---
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    {
+      id: 'welcome',
+      sender: 'assistant',
+      content: `Welcome to **Google AI Studio Coding Workspace** inside AetherOS!\n\nI can directly read your repository, modify and save files, inspect git changes, push commits to remote, and invoke Model Context Protocol (MCP) tools.\n\nAsk me anything about your codebase or click a suggestion below to begin.`,
+      model: 'gemini-3.8-flash',
+      provider: 'gemini',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    },
   ]);
+  const [userInput, setUserInput] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [includeActiveFileInContext, setIncludeActiveFileInContext] = useState(true);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
 
-  // Defensive Cybersecurity Assessment (Phase 10) state
-  const [showSecurityPanel, setShowSecurityPanel] = useState<boolean>(false);
-  const [secTargetUrl, setSecTargetUrl] = useState<string>('');
-  const [secDomain, setSecDomain] = useState<string>('');
-  const [secAuthConfirmed, setSecAuthConfirmed] = useState<boolean>(false);
-  const [isRunningAudit, setIsRunningAudit] = useState<boolean>(false);
-  const [securityReport, setSecurityReport] = useState<any | null>(null);
-  const [securityReportR2Key, setSecurityReportR2Key] = useState<string | null>(null);
-
-  const activeFile = files.find(f => f.id === selectedFileId) || files[0];
-  const onlineWorkers = workers.filter(w => w.status === 'online' || w.status === 'busy');
-  const trackedTask = activeTaskId ? tasks.find(t => t.id === activeTaskId) : null;
-
-  // Sync completed worker output into editor file when a dispatched task finishes
+  // --- Initial Data Loading ---
   useEffect(() => {
-    if (!trackedTask) return;
-    if (trackedTask.status === 'completed' && trackedTask.result_payload) {
-      const outputText =
-        typeof trackedTask.result_payload.output === 'string'
-          ? trackedTask.result_payload.output
-          : typeof trackedTask.result_payload.code === 'string'
-          ? trackedTask.result_payload.code
-          : JSON.stringify(trackedTask.result_payload, null, 2);
+    loadRepositoryTree();
+    loadGitStatus();
+    loadMcpData();
+    loadAvailableModels();
+  }, []);
 
-      const synthId = `code_task_${trackedTask.id}`;
-      setFiles(prev => {
-        if (prev.some(f => f.id === synthId)) return prev;
-        const newFile: CodeStudioFile = {
-          id: synthId,
-          filename: `synthesized_${trackedTask.id.slice(-6)}.ts`,
-          language: 'typescript',
-          description: trackedTask.title,
-          content: outputText,
-          taskId: trackedTask.id,
-        };
-        return [newFile, ...prev];
-      });
-      setSelectedFileId(synthId);
-      setExecutionOutput(prev => [
-        ...prev,
-        `[COMPLETED]: Task ${trackedTask.id} finished on worker ${trackedTask.claimed_by_worker || 'grid'}. Output loaded into editor.`,
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [chatMessages, isGenerating]);
+
+  // Load models from server
+  const loadAvailableModels = async () => {
+    try {
+      const res = await apiClient.getAiModels();
+      if (res.models) {
+        setModels(res.models);
+      }
+    } catch {
+      // Use standard fallback
+      setModels([
+        { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Google AI Studio)' },
+        { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite' },
+        { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
+        { id: 'qwen-2.5-coder-14b', name: 'Qwen 2.5 Coder 14B (Kaggle)' },
+        { id: 'external-api', name: 'External Provider / Custom API' },
       ]);
-      setActiveTaskId(null);
-    } else if (trackedTask.status === 'failed') {
-      setExecutionOutput(prev => [
-        ...prev,
-        `[FAILED]: Task ${trackedTask.id} failed: ${trackedTask.error_message || 'Execution error'}`,
-      ]);
-      setActiveTaskId(null);
     }
-  }, [trackedTask]);
+  };
 
-  const handleCodeChange = (newContent: string) => {
-    setFiles(prev =>
-      prev.map(f => (f.id === activeFile.id ? { ...f, content: newContent } : f))
+  // Load repo tree
+  const loadRepositoryTree = async () => {
+    try {
+      const tree = await apiClient.getRepoTree(4);
+      setRepoTree(tree);
+      // Open src/App.tsx by default if no tabs open
+      if (openTabs.length === 0) {
+        await handleOpenFile('src/App.tsx');
+      }
+    } catch (err: any) {
+      console.error('Failed to load repo tree:', err);
+    }
+  };
+
+  // Load git status & diff
+  const loadGitStatus = async () => {
+    try {
+      const status = await apiClient.getGitStatus();
+      setGitStatus(status);
+      const diffRes = await apiClient.getGitDiff();
+      setGitDiff(diffRes.diff);
+    } catch (err: any) {
+      console.error('Failed to load git status:', err);
+    }
+  };
+
+  // Load MCP servers & tools
+  const loadMcpData = async () => {
+    try {
+      const servers = await apiClient.getMcpServers();
+      setMcpServers(servers);
+      const tools = await apiClient.getMcpTools();
+      setMcpTools(tools);
+    } catch (err: any) {
+      console.error('Failed to load MCP servers:', err);
+    }
+  };
+
+  // Open file in editor tab
+  const handleOpenFile = async (filePath: string) => {
+    const existing = openTabs.find((t) => t.path === filePath);
+    if (existing) {
+      setActiveTabPath(filePath);
+      return;
+    }
+
+    setIsLoadingFile(true);
+    try {
+      const fileData = await apiClient.readRepoFile(filePath);
+      const newTab: OpenTab = {
+        path: filePath,
+        name: filePath.split('/').pop() || filePath,
+        content: fileData.content,
+        language: fileData.language || 'typescript',
+      };
+      setOpenTabs((prev) => [...prev, newTab]);
+      setActiveTabPath(filePath);
+    } catch (err: any) {
+      showNotification(`Failed to open file: ${err.message}`, 'error');
+    } finally {
+      setIsLoadingFile(false);
+    }
+  };
+
+  const handleCloseTab = (filePath: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const nextTabs = openTabs.filter((t) => t.path !== filePath);
+    setOpenTabs(nextTabs);
+    if (activeTabPath === filePath) {
+      setActiveTabPath(nextTabs.length > 0 ? nextTabs[nextTabs.length - 1].path : '');
+    }
+  };
+
+  const handleEditorContentChange = (newContent: string) => {
+    setOpenTabs((prev) =>
+      prev.map((t) => (t.path === activeTabPath ? { ...t, content: newContent, isModified: true } : t))
     );
   };
 
-  const handleLoadBlueprint = (blueprint: typeof REFERENCE_BLUEPRINTS[number]) => {
-    const existing = files.find(f => f.filename === blueprint.filename);
-    if (existing) {
-      setSelectedFileId(existing.id);
-    } else {
-      const newFile: CodeStudioFile = {
-        id: `bp_${Date.now()}`,
-        filename: blueprint.filename,
-        language: blueprint.language,
-        description: blueprint.description,
-        content: blueprint.code,
-      };
-      setFiles(prev => [newFile, ...prev]);
-      setSelectedFileId(newFile.id);
-    }
-    setExecutionOutput(prev => [
-      ...prev,
-      `Loaded reference blueprint '${blueprint.filename}' into editor buffer.`,
-    ]);
-  };
+  // Save current open file
+  const handleSaveCurrentFile = async () => {
+    const currentTab = openTabs.find((t) => t.path === activeTabPath);
+    if (!currentTab) return;
 
-  const handleSynthesize = async () => {
-    const directivePrompt = promptInput.trim();
-    if (!directivePrompt) return;
-
-    setIsSynthesizing(true);
+    setIsSavingFile(true);
     try {
-      const created = await submitTask({
-        agentId: 'agent_dataops',
-        title: `Code Synthesis: ${directivePrompt.slice(0, 64)}`,
-        description: directivePrompt,
-        inputPayload: {
-          workspace: 'code_generation',
-          task_type: 'inference',
-          model: selectedModel,
-          prompt: directivePrompt,
-          language: activeFile.language,
-          require_gpu: true,
-          min_vram_mb: 10240,
-          required_capability: 'code',
-        },
-        priority: 'high',
-      });
-      setActiveTaskId(created.id);
-      setPromptInput('');
-
-      if (onlineWorkers.length === 0) {
-        setExecutionOutput(prev => [
-          ...prev,
-          `[QUEUED — WAITING FOR GPU WORKER]: Task '${created.id}' persisted in D1 for model '${selectedModel}'.`,
-          `No active GPU compute workers are currently online. Connect your Kaggle T4×2 worker node to execute this task—no fabricated code was substituted.`,
-        ]);
-      } else {
-        setExecutionOutput(prev => [
-          ...prev,
-          `[DISPATCHED]: Task '${created.id}' queued for ${onlineWorkers.length} online GPU node(s) using ${selectedModel}.`,
-        ]);
-      }
-    } finally {
-      setIsSynthesizing(false);
-    }
-  };
-
-  const handleDispatchToGrid = async () => {
-    setIsDispatching(true);
-    try {
-      const created = await submitTask({
-        agentId: 'agent_dataops',
-        title: `Code Verification & Execution: ${activeFile.filename}`,
-        description: activeFile.description,
-        inputPayload: {
-          workspace: 'code_generation',
-          task_type: 'inference',
-          model: selectedModel,
-          filename: activeFile.filename,
-          language: activeFile.language,
-          source_code: activeFile.content,
-          prompt: `Review and verify module ${activeFile.filename}:\n\n${activeFile.content}`,
-          require_gpu: true,
-          min_vram_mb: 10240,
-          required_capability: 'code',
-        },
-        priority: 'high',
-      });
-      setActiveTaskId(created.id);
-      setExecutionOutput(prev => [
-        ...prev,
-        onlineWorkers.length > 0
-          ? `Dispatched ${activeFile.filename} (Task ${created.id}) to active GPU compute queue (${selectedModel}).`
-          : `Queued ${activeFile.filename} (Task ${created.id}) in D1. Waiting for a compatible GPU worker node to connect.`,
-      ]);
-    } finally {
-      setIsDispatching(false);
-    }
-  };
-
-  const handleSaveToR2 = async () => {
-    setIsSavingR2(true);
-    try {
-      const blob = new Blob([activeFile.content], { type: 'text/plain;charset=utf-8' });
-      const fileObj = new File([blob], activeFile.filename, { type: 'text/plain' });
-      await uploadFile(fileObj, activeFile.taskId);
-      setExecutionOutput(prev => [
-        ...prev,
-        `Uploaded ${activeFile.filename} (${blob.size} bytes) to Cloudflare R2 bucket and recorded D1 metadata.`,
-      ]);
-    } finally {
-      setIsSavingR2(false);
-    }
-  };
-
-  const handleRunDefensiveAudit = async () => {
-    setIsRunningAudit(true);
-    try {
-      const res = await apiClient.assessSecurity({
-        scope: 'full_audit',
-        target_url: secTargetUrl.trim() || undefined,
-        domain: secDomain.trim() || undefined,
-        source_code: activeFile.content,
-        source_filename: activeFile.filename,
-        authorization_confirmed: secAuthConfirmed || (!secTargetUrl.trim() && !secDomain.trim()),
-        authorized_scope_note: `Code Workspace Audit (${activeFile.filename})`,
-      });
-      setSecurityReport(res.report);
-      setSecurityReportR2Key(res.artifacts?.markdown_key || null);
-      setExecutionOutput(prev => [
-        ...prev,
-        `[AEGIS-0 SECURITY AUDIT]: Completed assessment ${res.report.report_id} (${res.report.summary.total_findings} findings: ${res.report.summary.verified_findings} verified, ${res.report.summary.unverified_indicators} unverified indicators). Archived to R2: ${res.artifacts?.markdown_key}`,
-      ]);
-      showNotification('Defensive cybersecurity audit completed & archived to R2', 'success');
+      await apiClient.writeRepoFile(currentTab.path, currentTab.content);
+      setOpenTabs((prev) =>
+        prev.map((t) => (t.path === activeTabPath ? { ...t, isModified: false } : t))
+      );
+      showNotification(`Saved ${currentTab.name}`, 'success');
+      await loadGitStatus();
     } catch (err: any) {
-      showNotification(err?.message || 'Security assessment failed', 'error');
+      showNotification(`Failed to save: ${err.message}`, 'error');
     } finally {
-      setIsRunningAudit(false);
+      setIsSavingFile(false);
     }
   };
 
-  const handleCopyCode = () => {
-    navigator.clipboard.writeText(activeFile.content);
-    setCopied(true);
-    showNotification(`Copied ${activeFile.filename} to clipboard`, 'success');
-    setTimeout(() => setCopied(false), 2000);
+  // Commit and push
+  const handleCommitAndPush = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!commitMessage.trim()) {
+      showNotification('Commit message is required', 'error');
+      return;
+    }
+
+    setIsCommittingOrPushing(true);
+    try {
+      // Step 1: Commit
+      const commitRes = await apiClient.commitGit(commitMessage.trim(), true);
+      showNotification(`Committed [${commitRes.commitHash}]: ${commitRes.message}`, 'success');
+
+      // Step 2: Push
+      const pushRes = await apiClient.pushGit({
+        branch: gitStatus.branch || 'main',
+        token: githubToken.trim() || undefined,
+      });
+
+      showNotification('Pushed to remote repository successfully', 'success');
+      setIsPushModalOpen(false);
+      setCommitMessage('');
+      await loadGitStatus();
+    } catch (err: any) {
+      showNotification(`Git error: ${err.message}`, 'error');
+    } finally {
+      setIsCommittingOrPushing(false);
+    }
   };
 
-  const lines = activeFile.content.split('\n');
+  // Send message to AI Studio coding assistant
+  const handleSendMessage = async (textToSend?: string) => {
+    const query = (textToSend || userInput).trim();
+    if (!query || isGenerating) return;
 
-  return (
-    <div className="space-y-6 pb-10 w-full max-w-full min-w-0">
-      {/* Workspace Header */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800 min-w-0">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-500 dark:text-slate-400 mb-1">
-            <span className="whitespace-nowrap">Studio Workspaces</span>
-            <span>/</span>
-            <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Code Generation</span>
-            <span>·</span>
-            <span className="font-mono tabular-nums whitespace-nowrap">{files.length} workspace files</span>
-          </div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Code Generation & Defensive Security Workbench
-          </h1>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
-            Author TypeScript Workers, D1 SQLite migrations, and PyTorch GPU modules, or run authorized defensive security audits.
-          </p>
-        </div>
+    const userMsg: ChatMessage = {
+      id: `usr_${Date.now()}`,
+      sender: 'user',
+      content: query,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
 
-        <div className="flex flex-wrap items-center gap-2 min-w-0">
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs max-w-full">
-            <Cpu className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-            <span className="text-slate-500 dark:text-slate-400 shrink-0">Model:</span>
-            <select
-              value={selectedModel}
-              onChange={e => setSelectedModel(e.target.value)}
-              className="font-mono font-semibold text-slate-900 dark:text-white bg-transparent focus:outline-none cursor-pointer truncate"
-            >
-              <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B (14GB VRAM)</option>
-              <option value="deepseek-r1-distill-qwen-14b">DeepSeek R1 Distill 14B (15GB VRAM)</option>
-            </select>
-          </div>
+    setChatMessages((prev) => [...prev, userMsg]);
+    setUserInput('');
+    setIsGenerating(true);
 
-          <button
-            onClick={() => setShowSecurityPanel(prev => !prev)}
-            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
-              showSecurityPanel
-                ? 'border-red-600 bg-red-600 text-white'
-                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
-            }`}
+    const currentTab = openTabs.find((t) => t.path === activeTabPath);
+
+    try {
+      const response = await apiClient.sendAiStudioChat({
+        message: query,
+        model: selectedModel,
+        externalApi:
+          selectedModel === 'external-api'
+            ? {
+                endpoint: externalEndpoint,
+                apiKey: externalApiKey,
+                model: externalModelName,
+                temperature,
+                maxTokens,
+              }
+            : undefined,
+        currentFile:
+          includeActiveFileInContext && currentTab
+            ? {
+                path: currentTab.path,
+                content: currentTab.content,
+                language: currentTab.language,
+              }
+            : undefined,
+        history: chatMessages.slice(-6).map((m) => ({
+          role: m.sender === 'user' ? 'user' : 'assistant',
+          content: m.content,
+        })),
+      });
+
+      const assistantMsg: ChatMessage = {
+        id: `asst_${Date.now()}`,
+        sender: 'assistant',
+        content: response.response,
+        model: response.model,
+        provider: response.provider,
+        toolCalls: response.tool_calls_executed,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+
+      setChatMessages((prev) => [...prev, assistantMsg]);
+      await loadGitStatus();
+    } catch (err: any) {
+      const errorMsg: ChatMessage = {
+        id: `err_${Date.now()}`,
+        sender: 'assistant',
+        content: `Error: ${err.message || 'Failed to generate response'}`,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      };
+      setChatMessages((prev) => [...prev, errorMsg]);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // Add custom MCP Server
+  const handleAddMcpServer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMcpName.trim() || !newMcpEndpoint.trim()) return;
+
+    try {
+      await apiClient.addMcpServer({
+        name: newMcpName.trim(),
+        description: 'External Custom MCP Service',
+        endpoint: newMcpEndpoint.trim(),
+      });
+      showNotification(`Added MCP Server: ${newMcpName}`, 'success');
+      setNewMcpName('');
+      setNewMcpEndpoint('');
+      await loadMcpData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  const toggleFolder = (folderPath: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folderPath)) next.delete(folderPath);
+      else next.add(folderPath);
+      return next;
+    });
+  };
+
+  const currentTab = openTabs.find((t) => t.path === activeTabPath);
+
+  // Render tree node recursively
+  const renderTreeNode = (node: any) => {
+    const isExpanded = expandedFolders.has(node.path);
+    const isSelected = activeTabPath === node.path;
+
+    if (node.type === 'dir') {
+      return (
+        <div key={node.path} className="select-none">
+          <div
+            onClick={() => toggleFolder(node.path)}
+            className="flex items-center gap-1.5 px-2 py-1 text-xs text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/60 rounded cursor-pointer transition-colors"
           >
-            <ShieldAlert className="w-3.5 h-3.5" />
-            <span>Aegis-0 Security Audit</span>
-          </button>
-
-          <button
-            onClick={handleSaveToR2}
-            disabled={isSavingR2}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
-          >
-            <HardDrive className="w-3.5 h-3.5 text-slate-500" />
-            <span>{isSavingR2 ? 'Uploading...' : 'Save to R2'}</span>
-          </button>
-
-          <button
-            onClick={handleDispatchToGrid}
-            disabled={isDispatching}
-            className="flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
-          >
-            <Play className="w-3.5 h-3.5 fill-current" />
-            <span>{isDispatching ? 'Dispatching...' : 'Run on Compute Grid'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Honest Compute Availability Banner */}
-      {onlineWorkers.length === 0 && (
-        <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/80 dark:bg-amber-950/30 flex items-start gap-3 text-xs text-amber-900 dark:text-amber-200">
-          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-          <div>
-            <span className="font-semibold">No GPU Compute Workers Currently Online:</span> Code synthesis tasks submitted below will be persisted in Cloudflare D1 (`queued`) and automatically claimed when your Kaggle T4×2 worker connects. Aegis-0 static code & defensive security audits execute natively on the Cloudflare Worker and are available immediately.
-          </div>
-        </div>
-      )}
-
-      {/* Defensive Cybersecurity Specialist Panel (Phase 10) */}
-      {showSecurityPanel && (
-        <div className="p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-            <div>
-              <div className="flex items-center gap-2">
-                <ShieldCheck className="w-4 h-4 text-red-600 dark:text-red-400" />
-                <h2 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Aegis-0 Defensive Cybersecurity Assessment (`agent_cybersec`)
-                </h2>
-              </div>
-              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-                Performs non-destructive HTTP security-header analysis, TLS inspection, DNS SPF/DMARC/CAA verification, and static source code auditing on `{activeFile.filename}`.
-              </p>
-            </div>
-            {securityReportR2Key && (
-              <a
-                href={`/api/files/download/${encodeURIComponent(securityReportR2Key)}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Download R2 Markdown Report</span>
-              </a>
+            {isExpanded ? (
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             )}
+            {isExpanded ? (
+              <FolderOpen className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+            ) : (
+              <Folder className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+            )}
+            <span className="truncate">{node.name}</span>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                Optional Target Website URL (HTTP Headers & TLS Check)
-              </label>
-              <input
-                type="url"
-                value={secTargetUrl}
-                onChange={e => setSecTargetUrl(e.target.value)}
-                placeholder="https://example.com (leave blank for code-only audit)"
-                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
-              />
-            </div>
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
-                Optional Domain Name (DNS SPF / DMARC / CAA Check)
-              </label>
-              <input
-                type="text"
-                value={secDomain}
-                onChange={e => setSecDomain(e.target.value)}
-                placeholder="example.com"
-                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
-              />
-            </div>
-          </div>
-
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
-            <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={secAuthConfirmed}
-                onChange={e => setSecAuthConfirmed(e.target.checked)}
-                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-              />
-              <span>
-                I confirm I am authorized to perform passive, non-destructive defensive checks on the specified target.
-              </span>
-            </label>
-
-            <button
-              onClick={handleRunDefensiveAudit}
-              disabled={isRunningAudit || ((Boolean(secTargetUrl.trim()) || Boolean(secDomain.trim())) && !secAuthConfirmed)}
-              className="px-4 py-2 text-xs font-semibold rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
-            >
-              {isRunningAudit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
-              <span>{isRunningAudit ? 'Running Defensive Audit...' : `Audit ${activeFile.filename} & Target`}</span>
-            </button>
-          </div>
-
-          {securityReport && (
-            <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-800">
-              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-center">
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
-                  <div className="text-[10px] text-slate-500 uppercase">Posture Score</div>
-                  <div className="text-base font-bold font-mono text-slate-900 dark:text-white">
-                    {securityReport.summary.overall_risk_score}/100
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-red-50/70 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50">
-                  <div className="text-[10px] text-red-600 dark:text-red-400 uppercase">Critical / High</div>
-                  <div className="text-base font-bold font-mono text-red-700 dark:text-red-300">
-                    {securityReport.summary.critical + securityReport.summary.high}
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50">
-                  <div className="text-[10px] text-amber-600 dark:text-amber-400 uppercase">Medium / Low</div>
-                  <div className="text-base font-bold font-mono text-amber-700 dark:text-amber-300">
-                    {securityReport.summary.medium + securityReport.summary.low}
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50">
-                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 uppercase">Verified Findings</div>
-                  <div className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-300">
-                    {securityReport.summary.verified_findings}
-                  </div>
-                </div>
-                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 sm:col-span-2">
-                  <div className="text-[10px] text-slate-500 uppercase">Unverified Indicators</div>
-                  <div className="text-base font-bold font-mono text-slate-700 dark:text-slate-300">
-                    {securityReport.summary.unverified_indicators}
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                {securityReport.findings.map((f: any) => (
-                  <div
-                    key={f.id}
-                    className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 text-xs space-y-1"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                      <span className="font-semibold text-slate-900 dark:text-white">
-                        [{f.severity.toUpperCase()} · CVSS {f.cvss_estimate.toFixed(1)}] {f.title}
-                      </span>
-                      <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold ${
-                          f.verification_status === 'verified_finding'
-                            ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300'
-                            : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300'
-                        }`}
-                      >
-                        {f.verification_status}
-                      </span>
-                    </div>
-                    <p className="text-slate-600 dark:text-slate-400">{f.description}</p>
-                    <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                      Evidence: {f.evidence}
-                    </div>
-                    <div className="text-[11px] text-blue-700 dark:text-blue-300">
-                      Remediation: {f.remediation}
-                    </div>
-                  </div>
-                ))}
-              </div>
+          {isExpanded && node.children && (
+            <div className="pl-3.5 border-l border-slate-200 dark:border-slate-800 ml-2 space-y-0.5">
+              {node.children.map(renderTreeNode)}
             </div>
           )}
         </div>
-      )}
+      );
+    }
 
-      {/* Prompt Synthesis Bar */}
-      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
-        <div className="flex flex-col sm:flex-row gap-2.5">
-          <div className="relative flex-1">
-            <input
-              type="text"
-              value={promptInput}
-              onChange={e => setPromptInput(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') handleSynthesize();
-              }}
-              placeholder="Describe a module, SQL migration, or worker endpoint to dispatch to Qwen 2.5 Coder 14B..."
-              className="w-full px-3.5 py-2.5 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
-            />
+    return (
+      <div
+        key={node.path}
+        onClick={() => handleOpenFile(node.path)}
+        className={`flex items-center gap-1.5 px-2 py-1 text-xs rounded cursor-pointer transition-colors select-none ${
+          isSelected
+            ? 'bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 font-medium'
+            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800/40 hover:text-slate-900 dark:hover:text-slate-200'
+        }`}
+      >
+        <FileCode className="w-3.5 h-3.5 shrink-0 text-slate-400" />
+        <span className="truncate">{node.name}</span>
+      </div>
+    );
+  };
+
+  return (
+    <div className="h-[calc(100vh-5.5rem)] flex flex-col w-full max-w-full overflow-hidden bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs">
+      {/* ======================================================== */}
+      {/* TOP COMMAND BAR (AI Studio Header) */}
+      {/* ======================================================== */}
+      <div className="h-13 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between gap-2 bg-slate-50/70 dark:bg-slate-900/70 shrink-0 min-w-0">
+        {/* Left: Title & Repo Git Branch status */}
+        <div className="flex items-center gap-3 shrink-0 min-w-0">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-2xs shrink-0">
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div className="hidden sm:block">
+              <span className="text-xs font-bold text-slate-900 dark:text-white">AI Studio Code IDE</span>
+            </div>
           </div>
-          <button
-            onClick={handleSynthesize}
-            disabled={isSynthesizing || !promptInput.trim()}
-            className="px-4 py-2.5 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-blue-600 text-white hover:bg-slate-800 dark:hover:bg-blue-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
-          >
-            {isSynthesizing ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+
+          {/* Git Branch Pill */}
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-700 dark:text-slate-300">
+            <GitBranch className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+            <span className="font-semibold">{gitStatus.branch || 'main'}</span>
+            <span className="text-slate-300 dark:text-slate-600">·</span>
+            {gitStatus.clean ? (
+              <span className="text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                <Check className="w-3 h-3" />
+                <span>clean</span>
+              </span>
             ) : (
-              <Sparkles className="w-3.5 h-3.5" />
+              <span className="text-amber-600 dark:text-amber-400">
+                {gitStatus.modified.length + gitStatus.untracked.length} modified
+              </span>
             )}
-            <span>{isSynthesizing ? 'Dispatching Task...' : 'Dispatch Code Synthesis'}</span>
+          </div>
+        </div>
+
+        {/* Middle: Model Selector Dropdown & External API Config */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          <div className="relative">
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="py-1.5 pl-2.5 pr-8 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs truncate max-w-[190px] sm:max-w-none"
+            >
+              <optgroup label="Google Gemini (AI Studio)">
+                <option value="gemini-3.8-flash">Gemini 3.8 Flash (Default)</option>
+                <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
+                <option value="gemini-4-argon">Gemini 4 Argon (Reasoning)</option>
+              </optgroup>
+              <optgroup label="Distributed Kaggle Workers">
+                <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B (T4×2)</option>
+              </optgroup>
+              <optgroup label="Custom Provider">
+                <option value="external-api">External API / Custom Endpoint</option>
+              </optgroup>
+            </select>
+          </div>
+
+          {/* Model & External API settings button */}
+          <button
+            onClick={() => setIsConfigModalOpen(true)}
+            title="Configure External API Endpoint & Parameters"
+            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-blue-600 transition-colors"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
+
+          {/* MCP Hub Button */}
+          <button
+            onClick={() => setIsMcpModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition-colors"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span className="hidden md:inline">MCP Tools</span>
+            <span className="px-1.5 py-0.2 rounded-full bg-purple-200 dark:bg-purple-900 text-[10px] font-mono">
+              {mcpTools.length}
+            </span>
+          </button>
+
+          {/* Git Commit & Push Button */}
+          <button
+            onClick={() => setIsPushModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white shadow-xs transition-colors"
+          >
+            <UploadCloud className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Commit & Push</span>
           </button>
         </div>
 
-        {/* Reference Blueprints */}
-        <div className="flex flex-wrap items-center gap-2 pt-1">
-          <span className="text-[11px] text-slate-400 font-medium">Load Reference Blueprint:</span>
-          {REFERENCE_BLUEPRINTS.map((bp, i) => (
-            <button
-              key={i}
-              onClick={() => handleLoadBlueprint(bp)}
-              className="px-2.5 py-1 text-xs rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
-            >
-              {bp.label}
-            </button>
-          ))}
+        {/* Right: Layout Switcher */}
+        <div className="hidden lg:flex items-center gap-1 p-1 bg-slate-200/60 dark:bg-slate-800 rounded-lg text-xs">
+          <button
+            onClick={() => setLayoutMode('split')}
+            className={`px-2 py-1 rounded-md font-medium transition-colors ${
+              layoutMode === 'split' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Split
+          </button>
+          <button
+            onClick={() => setLayoutMode('editor')}
+            className={`px-2 py-1 rounded-md font-medium transition-colors ${
+              layoutMode === 'editor' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Editor
+          </button>
+          <button
+            onClick={() => setLayoutMode('chat')}
+            className={`px-2 py-1 rounded-md font-medium transition-colors ${
+              layoutMode === 'chat' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            Chat
+          </button>
         </div>
       </div>
 
-      {/* Main 3-Column IDE Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Column: File Explorer (3 cols) */}
-        <div className="lg:col-span-3 min-w-0 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white">
-              <FolderGit2 className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              <span>Workspace Files</span>
-            </div>
-            <button
-              onClick={() => {
-                const newFile: CodeStudioFile = {
-                  id: `code_${Date.now()}`,
-                  filename: `module_${files.length + 1}.ts`,
-                  language: 'typescript',
-                  description: 'Custom TypeScript module',
-                  content: `// New AetherOS module\nexport function initModule() {\n  return { ready: true };\n}\n`,
-                };
-                setFiles(prev => [newFile, ...prev]);
-                setSelectedFileId(newFile.id);
-              }}
-              className="p-1 text-slate-500 hover:text-slate-900 dark:hover:text-white rounded hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-              title="New file"
-            >
-              <Plus className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
-            {files.map(file => {
-              const isSelected = file.id === activeFile.id;
-              return (
-                <button
-                  key={file.id}
-                  onClick={() => setSelectedFileId(file.id)}
-                  className={`w-full text-left px-4 py-3 transition-colors flex items-start gap-2.5 ${
-                    isSelected
-                      ? 'bg-blue-50/70 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
-                      : 'hover:bg-slate-50 dark:hover:bg-slate-800/50 text-slate-700 dark:text-slate-300'
-                  }`}
-                >
-                  <FileCode className={`w-4 h-4 mt-0.5 shrink-0 ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-slate-400'}`} />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-mono font-semibold truncate">
-                      {file.filename}
-                    </div>
-                    <div className="text-[11px] text-slate-500 dark:text-slate-400 truncate mt-0.5">
-                      {file.language} · {file.content.split('\n').length} lines
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Center + Right: Code Editor & Diagnostics (9 cols) */}
-        <div className="lg:col-span-9 min-w-0 space-y-4">
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-            {/* Editor Header */}
-            <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 min-w-0">
-                <Code2 className="w-4 h-4 text-blue-600 dark:text-blue-400 shrink-0" />
-                <span className="font-mono text-xs font-semibold text-slate-900 dark:text-white truncate">
-                  {activeFile.filename}
-                </span>
-                <span className="text-xs text-slate-400 hidden sm:inline">·</span>
-                <span className="text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:inline">
-                  {activeFile.description}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                  {lines.length} lines · {activeFile.content.length} chars
-                </span>
-                <button
-                  onClick={handleCopyCode}
-                  className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 transition-colors"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Copied' : 'Copy'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Editable Code Buffer with Line Gutter */}
-            <div className="relative flex bg-slate-950 text-slate-100 font-mono text-xs min-h-[380px] max-h-[520px] overflow-y-auto">
-              <div
-                aria-hidden="true"
-                className="select-none py-4 px-3 text-right text-slate-600 bg-slate-950 border-r border-slate-800/80 tabular-nums leading-6 shrink-0"
+      {/* ======================================================== */}
+      {/* MAIN VIEWPORT: 3-PANEL LAYOUT */}
+      {/* ======================================================== */}
+      <div className="flex-1 flex overflow-hidden min-h-0">
+        {/* PANEL 1: LEFT SIDEBAR (FILE EXPLORER & GIT) */}
+        {layoutMode !== 'chat' && (
+          <div className="w-60 border-r border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/30 shrink-0 overflow-hidden">
+            {/* Left Tabs */}
+            <div className="flex border-b border-slate-200 dark:border-slate-800 text-xs font-semibold bg-slate-100/70 dark:bg-slate-900/60">
+              <button
+                onClick={() => setActiveLeftTab('files')}
+                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1.5 ${
+                  activeLeftTab === 'files'
+                    ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                }`}
               >
-                {lines.map((_, idx) => (
-                  <div key={idx}>{idx + 1}</div>
-                ))}
-              </div>
-              <textarea
-                value={activeFile.content}
-                onChange={e => handleCodeChange(e.target.value)}
-                spellCheck={false}
-                className="w-full min-w-0 p-4 bg-transparent text-slate-100 font-mono text-xs leading-6 focus:outline-none resize-none overflow-x-auto"
-                rows={Math.max(16, lines.length)}
-              />
+                <Folder className="w-3.5 h-3.5" />
+                <span>Files</span>
+              </button>
+              <button
+                onClick={() => setActiveLeftTab('git')}
+                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1.5 ${
+                  activeLeftTab === 'git'
+                    ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                }`}
+              >
+                <GitBranch className="w-3.5 h-3.5" />
+                <span>Changes</span>
+                {!gitStatus.clean && (
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                )}
+              </button>
+            </div>
+
+            {/* Left Content Area */}
+            <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              {activeLeftTab === 'files' ? (
+                <div className="space-y-0.5">
+                  <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>Repository Explorer</span>
+                    <button onClick={loadRepositoryTree} title="Refresh tree">
+                      <RefreshCw className="w-3 h-3 hover:text-slate-600" />
+                    </button>
+                  </div>
+                  {repoTree.map(renderTreeNode)}
+                </div>
+              ) : (
+                /* Git Changes Tab */
+                <div className="space-y-3 text-xs">
+                  <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>Working Tree</span>
+                    <button onClick={loadGitStatus} title="Refresh status">
+                      <RefreshCw className="w-3 h-3 hover:text-slate-600" />
+                    </button>
+                  </div>
+
+                  {/* Modified Files */}
+                  <div>
+                    <div className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 px-2 mb-1">
+                      Modified ({gitStatus.modified.length})
+                    </div>
+                    {gitStatus.modified.length === 0 ? (
+                      <div className="px-2 text-[11px] text-slate-400 italic">None</div>
+                    ) : (
+                      gitStatus.modified.map((file: string) => (
+                        <div
+                          key={file}
+                          onClick={() => handleOpenFile(file)}
+                          className="px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer font-mono text-[11px] text-slate-700 dark:text-slate-300 truncate"
+                        >
+                          {file}
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Untracked Files */}
+                  <div>
+                    <div className="text-[11px] font-semibold text-blue-600 dark:text-blue-400 px-2 mb-1">
+                      Untracked ({gitStatus.untracked.length})
+                    </div>
+                    {gitStatus.untracked.length === 0 ? (
+                      <div className="px-2 text-[11px] text-slate-400 italic">None</div>
+                    ) : (
+                      gitStatus.untracked.map((file: string) => (
+                        <div
+                          key={file}
+                          onClick={() => handleOpenFile(file)}
+                          className="px-2 py-1 hover:bg-slate-100 dark:hover:bg-slate-800 rounded cursor-pointer font-mono text-[11px] text-slate-700 dark:text-slate-300 truncate"
+                        >
+                          {file}
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Diff Trigger */}
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 px-2">
+                    <button
+                      onClick={() => setIsGitDiffOpen(true)}
+                      className="w-full py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
+                    >
+                      Inspect Full Git Diff
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
+        )}
 
-          {/* Compiler & Compute Verification Output */}
-          <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
-                <Terminal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <span>Orchestrator & Verification Console</span>
-                {trackedTask && (
-                  <span className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 font-mono text-[10px]">
-                    Task {trackedTask.id}: {trackedTask.status.toUpperCase()} ({trackedTask.progress_percent}%)
-                  </span>
-                )}
-              </div>
-              <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                Active GPU Workers: {onlineWorkers.length}
-              </span>
+        {/* PANEL 2: CENTER CODE EDITOR & TABS */}
+        {layoutMode !== 'chat' && (
+          <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-950 overflow-hidden">
+            {/* File Tabs Strip */}
+            <div className="h-10 border-b border-slate-200 dark:border-slate-800 flex items-center bg-slate-100/50 dark:bg-slate-900/40 px-2 overflow-x-auto shrink-0">
+              {openTabs.map((tab) => {
+                const isActive = tab.path === activeTabPath;
+                return (
+                  <div
+                    key={tab.path}
+                    onClick={() => setActiveTabPath(tab.path)}
+                    className={`flex items-center gap-2 px-3 py-1.5 text-xs font-mono rounded-t-lg border-t-2 cursor-pointer transition-colors shrink-0 ${
+                      isActive
+                        ? 'border-blue-600 bg-white dark:bg-slate-950 text-slate-900 dark:text-white font-semibold shadow-2xs'
+                        : 'border-transparent text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <span>{tab.name}</span>
+                    {tab.isModified && <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />}
+                    <button
+                      onClick={(e) => handleCloseTab(tab.path, e)}
+                      className="p-0.5 hover:bg-slate-200 dark:hover:bg-slate-800 rounded text-slate-400 hover:text-slate-600"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+
+              {openTabs.length === 0 && (
+                <div className="text-xs text-slate-400 italic px-2">No files open</div>
+              )}
             </div>
 
-            <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200/80 dark:border-slate-800 font-mono text-[11px] text-slate-700 dark:text-slate-300 space-y-1">
-              {executionOutput.map((line, idx) => (
-                <div key={idx} className="flex items-start gap-2">
-                  <span className="text-slate-400 select-none tabular-nums">{String(idx + 1).padStart(2, '0')}</span>
-                  <span>{line}</span>
+            {/* Code Editor Viewport */}
+            {currentTab ? (
+              <div className="flex-1 flex flex-col min-h-0 relative">
+                {/* Code Editor Action Bar */}
+                <div className="h-8 border-b border-slate-100 dark:border-slate-800/80 px-3 flex items-center justify-between text-[11px] text-slate-400 font-mono bg-white dark:bg-slate-950 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-600 dark:text-slate-300 font-semibold">{currentTab.path}</span>
+                    <span>·</span>
+                    <span>{currentTab.language}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {currentTab.isModified && <span className="text-amber-500">Unsaved changes</span>}
+                    <button
+                      onClick={handleSaveCurrentFile}
+                      disabled={isSavingFile}
+                      className="flex items-center gap-1 text-blue-600 dark:text-blue-400 font-semibold hover:underline"
+                    >
+                      <Save className="w-3 h-3" />
+                      <span>{isSavingFile ? 'Saving...' : 'Save File'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Editor textarea */}
+                <div className="flex-1 overflow-auto flex">
+                  {/* Line Numbers */}
+                  <div className="w-10 bg-slate-50 dark:bg-slate-900/50 py-3 text-right pr-2 text-xs font-mono text-slate-400 select-none shrink-0 border-r border-slate-100 dark:border-slate-800/80">
+                    {currentTab.content.split('\n').map((_, i) => (
+                      <div key={i}>{i + 1}</div>
+                    ))}
+                  </div>
+                  <textarea
+                    value={currentTab.content}
+                    onChange={(e) => handleEditorContentChange(e.target.value)}
+                    spellCheck={false}
+                    className="flex-1 p-3 text-xs font-mono leading-relaxed bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 resize-none focus:outline-none"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-slate-400 text-xs p-6">
+                <FileCode className="w-10 h-10 mb-2 opacity-50 text-blue-500" />
+                <p>Select a file from the repository explorer on the left</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PANEL 3: RIGHT AI STUDIO CHAT ASSISTANT */}
+        {layoutMode !== 'editor' && (
+          <div className="w-full lg:w-[460px] xl:w-[500px] border-l border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/20 shrink-0 overflow-hidden">
+            {/* Assistant Header */}
+            <div className="h-10 border-b border-slate-200 dark:border-slate-800 px-3 flex items-center justify-between text-xs bg-white dark:bg-slate-950 shrink-0">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-blue-600" />
+                <span className="font-semibold text-slate-900 dark:text-white">AI Studio Assistant</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
+                  {selectedModel}
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <label className="flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={includeActiveFileInContext}
+                    onChange={(e) => setIncludeActiveFileInContext(e.target.checked)}
+                    className="rounded text-blue-600"
+                  />
+                  <span>Attach open file</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Chat Messages Stream */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {chatMessages.map((msg) => (
+                <div
+                  key={msg.id}
+                  className={`flex flex-col ${msg.sender === 'user' ? 'items-end' : 'items-start'}`}
+                >
+                  <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mb-1 px-1">
+                    {msg.sender === 'user' ? (
+                      <>
+                        <span>You</span>
+                        <span>·</span>
+                        <span>{msg.timestamp}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3 h-3 text-blue-500" />
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">{msg.model || 'AI Studio'}</span>
+                        <span>·</span>
+                        <span>{msg.timestamp}</span>
+                      </>
+                    )}
+                  </div>
+
+                  <div
+                    className={`max-w-[95%] p-3.5 rounded-2xl text-xs leading-relaxed ${
+                      msg.sender === 'user'
+                        ? 'bg-blue-600 text-white shadow-2xs'
+                        : 'bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs space-y-2'
+                    }`}
+                  >
+                    {/* Tool Calls Execution Accordion */}
+                    {msg.toolCalls && msg.toolCalls.length > 0 && (
+                      <div className="mb-2 p-2 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+                        <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-400">
+                          <Wrench className="w-3 h-3 text-purple-500" />
+                          <span>Executed MCP Tools ({msg.toolCalls.length})</span>
+                        </div>
+                        {msg.toolCalls.map((tc, idx) => (
+                          <div key={idx} className="text-[10px] font-mono text-slate-500 flex items-center justify-between">
+                            <span className="text-blue-600 dark:text-blue-400">{tc.name}()</span>
+                            <span className="text-emerald-600">success</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="whitespace-pre-wrap font-sans">{msg.content}</div>
+
+                    {/* Quick insert to editor if contains code block */}
+                    {msg.content.includes('```') && currentTab && (
+                      <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 flex justify-end">
+                        <button
+                          onClick={() => {
+                            const codeMatch = msg.content.match(/```(?:[a-zA-Z0-9]+)?\n([\s\S]*?)```/);
+                            if (codeMatch && codeMatch[1]) {
+                              handleEditorContentChange(codeMatch[1]);
+                              showNotification(`Inserted code block into ${currentTab.name}`, 'info');
+                            }
+                          }}
+                          className="px-2.5 py-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-950/60 rounded-lg transition-colors flex items-center gap-1"
+                        >
+                          <Copy className="w-3 h-3" />
+                          <span>Apply Code to Editor</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
+
+              {isGenerating && (
+                <div className="flex items-center gap-2 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs text-slate-500 animate-pulse">
+                  <Sparkles className="w-4 h-4 text-blue-500" />
+                  <span>AI Studio is thinking, reading repo context & synthesizing...</span>
+                </div>
+              )}
+              <div ref={chatBottomRef} />
+            </div>
+
+            {/* Quick Prompt Suggestions */}
+            <div className="px-3 py-1.5 border-t border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/60 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
+              <button
+                onClick={() => handleSendMessage('Explain the architecture of the open file and suggest improvements.')}
+                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Explain active file
+              </button>
+              <button
+                onClick={() => handleSendMessage('Run git status and explain what changes are uncommitted.')}
+                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Check git status
+              </button>
+              <button
+                onClick={() => handleSendMessage('Write a complete unit test for this module.')}
+                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Generate unit test
+              </button>
+            </div>
+
+            {/* Input Box */}
+            <div className="p-3 border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 shrink-0">
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSendMessage();
+                }}
+                className="relative"
+              >
+                <textarea
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage();
+                    }
+                  }}
+                  placeholder="Ask AI Studio to write code, inspect repo, or push to git..."
+                  rows={2}
+                  className="w-full pl-3 pr-10 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                />
+                <button
+                  type="submit"
+                  disabled={isGenerating || !userInput.trim()}
+                  className="absolute right-2.5 bottom-3.5 p-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white transition-colors"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ======================================================== */}
+      {/* MODAL 1: GIT COMMIT & PUSH DIALOG */}
+      {/* ======================================================== */}
+      {isPushModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <UploadCloud className="w-4 h-4 text-blue-600" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">Git Commit & Push</h3>
+              </div>
+              <button onClick={() => setIsPushModalOpen(false)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCommitAndPush} className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Commit Message
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={commitMessage}
+                  onChange={(e) => setCommitMessage(e.target.value)}
+                  placeholder="e.g. feat: integrate AI Studio and MCP tools"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Target Branch
+                </label>
+                <input
+                  type="text"
+                  disabled
+                  value={gitStatus.branch || 'main'}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-100 dark:bg-slate-800/50 text-slate-500 font-mono"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  GitHub Personal Access Token (Optional)
+                </label>
+                <input
+                  type="password"
+                  value={githubToken}
+                  onChange={(e) => setGithubToken(e.target.value)}
+                  placeholder="ghp_••••••••••••••••••••••••••••••••••••"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                />
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Only required if pushing to a remote that requires authenticated credentials.
+                </p>
+              </div>
+
+              <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40 rounded-xl text-blue-800 dark:text-blue-300 flex items-center justify-between">
+                <span>Changed Files:</span>
+                <span className="font-mono font-bold">
+                  {gitStatus.modified.length + gitStatus.untracked.length} files
+                </span>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="submit"
+                  disabled={isCommittingOrPushing}
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white font-semibold flex items-center justify-center gap-2"
+                >
+                  <UploadCloud className="w-4 h-4" />
+                  <span>{isCommittingOrPushing ? 'Pushing to remote...' : 'Commit & Push Now'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 2: MCP TOOLS & SERVERS HUB */}
+      {/* ======================================================== */}
+      {isMcpModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <Layers className="w-4 h-4 text-purple-600" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Model Context Protocol (MCP) Hub
+                </h3>
+              </div>
+              <button onClick={() => setIsMcpModalOpen(false)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 text-xs">
+              {/* Connected MCP Servers */}
+              <div>
+                <h4 className="font-semibold text-slate-900 dark:text-white mb-2">Connected MCP Servers</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {mcpServers.map((s) => (
+                    <div
+                      key={s.id}
+                      className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900 dark:text-white">{s.name}</span>
+                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-mono">
+                          {s.transport}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500">{s.description}</p>
+                      <div className="text-[10px] text-purple-600 dark:text-purple-400 font-mono">
+                        {s.tools?.length || 0} tools available
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Add Custom MCP Server */}
+              <form onSubmit={handleAddMcpServer} className="p-4 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/40 dark:bg-purple-950/20 space-y-3">
+                <h4 className="font-bold text-slate-900 dark:text-white">Add External MCP Server</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={newMcpName}
+                    onChange={(e) => setNewMcpName(e.target.value)}
+                    placeholder="Server Name (e.g. Sentry MCP)"
+                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
+                  />
+                  <input
+                    type="url"
+                    required
+                    value={newMcpEndpoint}
+                    onChange={(e) => setNewMcpEndpoint(e.target.value)}
+                    placeholder="https://mcp-endpoint.domain/sse"
+                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs"
+                >
+                  Connect External MCP
+                </button>
+              </form>
+
+              {/* Discovered MCP Tools Catalog */}
+              <div>
+                <h4 className="font-semibold text-slate-900 dark:text-white mb-2">Available Discovered Tools ({mcpTools.length})</h4>
+                <div className="space-y-2">
+                  {mcpTools.map((t, idx) => (
+                    <div
+                      key={idx}
+                      className="p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-start justify-between gap-3"
+                    >
+                      <div>
+                        <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                          {t.tool?.name}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{t.tool?.description}</p>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                        {t.serverName}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 3: MODEL & EXTERNAL API SETTINGS */}
+      {/* ======================================================== */}
+      {isConfigModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Sliders className="w-4 h-4 text-blue-600" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Model & External API Settings
+                </h3>
+              </div>
+              <button onClick={() => setIsConfigModalOpen(false)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Active Model
+                </label>
+                <select
+                  value={selectedModel}
+                  onChange={(e) => setSelectedModel(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+                >
+                  {models.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {selectedModel === 'external-api' && (
+                <div className="space-y-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Endpoint URL
+                    </label>
+                    <input
+                      type="url"
+                      value={externalEndpoint}
+                      onChange={(e) => setExternalEndpoint(e.target.value)}
+                      placeholder="https://api.openai.com/v1/chat/completions"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      API Key / Bearer Token
+                    </label>
+                    <input
+                      type="password"
+                      value={externalApiKey}
+                      onChange={(e) => setExternalApiKey(e.target.value)}
+                      placeholder="sk-••••••••••••••••••••••••••••••••••••"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Model Identifier
+                    </label>
+                    <input
+                      type="text"
+                      value={externalModelName}
+                      onChange={(e) => setExternalModelName(e.target.value)}
+                      placeholder="gpt-4o, claude-3-7-sonnet, deepseek-chat"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="font-semibold text-slate-700 dark:text-slate-300">
+                    Temperature ({temperature})
+                  </label>
+                  <span className="text-slate-400 text-[10px]">Creativity / Determinism</span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={temperature}
+                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                  className="w-full accent-blue-600"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Max Output Tokens
+                </label>
+                <input
+                  type="number"
+                  min={256}
+                  max={8192}
+                  step={256}
+                  value={maxTokens}
+                  onChange={(e) => setMaxTokens(parseInt(e.target.value, 10))}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+                />
+              </div>
+
+              <button
+                onClick={() => {
+                  setIsConfigModalOpen(false);
+                  showNotification('Configuration saved', 'success');
+                }}
+                className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+              >
+                Apply & Save Settings
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL 4: GIT DIFF INSPECTION VIEWER */}
+      {/* ======================================================== */}
+      {isGitDiffOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4 max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <GitBranch className="w-4 h-4 text-blue-600" />
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Working Tree Diff (vs HEAD)
+                </h3>
+              </div>
+              <button onClick={() => setIsGitDiffOpen(false)}>
+                <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-auto bg-slate-950 p-4 rounded-xl font-mono text-xs text-slate-200 whitespace-pre">
+              {gitDiff || '(No unstaged modifications)'}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

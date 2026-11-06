@@ -36,6 +36,21 @@ import {
 } from './worker/auth.ts';
 import { runDefensiveSecurityAssessment } from './worker/cybersecurity.ts';
 import { runWebInvestigation } from './worker/web-intelligence.ts';
+import {
+  getRepoTree,
+  readRepoFile,
+  writeRepoFile,
+  getGitStatus,
+  getGitDiff,
+  stageGitFiles,
+  commitGit,
+  pushGit,
+} from './worker/repo-git-service.ts';
+import { mcpManager } from './worker/mcp-service.ts';
+import {
+  processAiStudioChat,
+  AVAILABLE_MODELS,
+} from './worker/ai-studio-service.ts';
 import type {
   ActivityLog,
   Agent,
@@ -3893,6 +3908,210 @@ export async function createAetherApp(options: { disableVite?: boolean; persistP
       conversation_id: convId,
       active_workers: activeWorkers.length,
     });
+  });
+
+  // ==========================================
+  // 11. Repository & Git Operations API
+  // ==========================================
+
+  // Get workspace repo file tree
+  app.get('/api/repo/tree', async (req: Request, res: Response) => {
+    try {
+      const depth = parseInt(String(req.query.depth || '4'), 10);
+      const tree = await getRepoTree(depth);
+      res.json({ success: true, tree });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Read a specific file from repo
+  app.get('/api/repo/file', async (req: Request, res: Response) => {
+    try {
+      const filePath = String(req.query.path || '');
+      if (!filePath) {
+        res.status(400).json({ success: false, error: 'Missing path parameter' });
+        return;
+      }
+      const data = await readRepoFile(filePath);
+      res.json({ success: true, file: data });
+    } catch (err: any) {
+      res.status(404).json({ success: false, error: err.message });
+    }
+  });
+
+  // Write/edit a specific file in repo
+  app.post('/api/repo/file', async (req: Request, res: Response) => {
+    try {
+      const { path: filePath, content } = req.body || {};
+      if (!filePath || typeof content !== 'string') {
+        res.status(400).json({ success: false, error: 'Missing path or content in body' });
+        return;
+      }
+      const data = await writeRepoFile(filePath, content);
+      addLog({
+        action: 'repo_file_modified',
+        category: 'file',
+        details: { path: filePath, size: data.size },
+      });
+      res.json({ success: true, ...data });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Get git status
+  app.get('/api/repo/git/status', async (_req: Request, res: Response) => {
+    try {
+      const status = await getGitStatus();
+      res.json({ success: true, status });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Get git diff
+  app.get('/api/repo/git/diff', async (req: Request, res: Response) => {
+    try {
+      const filePath = req.query.path ? String(req.query.path) : undefined;
+      const diff = await getGitDiff(filePath);
+      res.json({ success: true, ...diff });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Stage git files
+  app.post('/api/repo/git/stage', async (req: Request, res: Response) => {
+    try {
+      const { paths } = req.body || {};
+      const result = await stageGitFiles(paths);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Commit git changes
+  app.post('/api/repo/git/commit', async (req: Request, res: Response) => {
+    try {
+      const { message, stage_all } = req.body || {};
+      if (!message) {
+        res.status(400).json({ success: false, error: 'Commit message is required' });
+        return;
+      }
+      const result = await commitGit(message, stage_all !== false);
+      addLog({
+        action: 'git_committed',
+        category: 'system',
+        details: { commitHash: result.commitHash, message: result.message },
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Push git commits
+  app.post('/api/repo/git/push', async (req: Request, res: Response) => {
+    try {
+      const { branch, remote, token } = req.body || {};
+      const result = await pushGit({ branch, remote, token });
+      addLog({
+        action: 'git_pushed',
+        category: 'system',
+        details: { branch: branch || 'main' },
+      });
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ==========================================
+  // 12. Model Context Protocol (MCP) API
+  // ==========================================
+
+  // List all MCP servers
+  app.get('/api/mcp/servers', (_req: Request, res: Response) => {
+    res.json({ success: true, servers: mcpManager.getServers() });
+  });
+
+  // Add custom external MCP server
+  app.post('/api/mcp/servers', (req: Request, res: Response) => {
+    try {
+      const { name, description, endpoint, transport } = req.body || {};
+      if (!name || !endpoint) {
+        res.status(400).json({ success: false, error: 'Name and endpoint are required' });
+        return;
+      }
+      const server = mcpManager.addCustomServer({ name, description, endpoint, transport });
+      res.status(201).json({ success: true, server });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Toggle MCP server
+  app.post('/api/mcp/servers/:id/toggle', (req: Request, res: Response) => {
+    const { enabled } = req.body || {};
+    const ok = mcpManager.toggleServer(req.params.id, Boolean(enabled));
+    res.json({ success: ok });
+  });
+
+  // Remove custom MCP server
+  app.delete('/api/mcp/servers/:id', (req: Request, res: Response) => {
+    const ok = mcpManager.removeCustomServer(req.params.id);
+    res.json({ success: ok });
+  });
+
+  // List all available MCP tools
+  app.get('/api/mcp/tools', (_req: Request, res: Response) => {
+    res.json({ success: true, tools: mcpManager.getAllTools() });
+  });
+
+  // Execute MCP tool directly
+  app.post('/api/mcp/tools/execute', async (req: Request, res: Response) => {
+    try {
+      const { tool, arguments: args } = req.body || {};
+      if (!tool) {
+        res.status(400).json({ success: false, error: 'Missing tool name' });
+        return;
+      }
+      const result = await mcpManager.executeTool(tool, args || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // ==========================================
+  // 13. Google AI Studio Coding Assistant API
+  // ==========================================
+
+  // Get available models
+  app.get('/api/ai/models', (_req: Request, res: Response) => {
+    res.json({
+      success: true,
+      models: AVAILABLE_MODELS,
+      gemini_api_key_configured: Boolean(process.env.GEMINI_API_KEY),
+    });
+  });
+
+  // Process AI Studio chat request
+  app.post('/api/ai/chat', async (req: Request, res: Response) => {
+    try {
+      const body = req.body || {};
+      if (!body.message || typeof body.message !== 'string' || !body.message.trim()) {
+        res.status(400).json({ success: false, error: 'Message is required' });
+        return;
+      }
+
+      const response = await processAiStudioChat(body);
+      res.json({ success: true, ...response });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   app.post('/api/reset', (_req: Request, res: Response) => {
