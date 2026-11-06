@@ -246,6 +246,7 @@ function createMigratedWorkerEnv(extraEnv: Partial<Env> = {}): {
   sqlite.exec(loadMigrationSql('0002_distributed_compute.sql'));
   sqlite.exec(loadMigrationSql('0003_worker_security.sql'));
   sqlite.exec(loadMigrationSql('0004_accounts_and_sessions.sql'));
+  sqlite.exec(loadMigrationSql('0005_operational_platform_hardening.sql'));
 
   const db = new SqliteD1Adapter(sqlite);
   const r2 = new MemoryR2Bucket();
@@ -1626,6 +1627,15 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
     const regData: any = await regRes.json();
 
     const credId = 'cred_webauthn_john_01';
+    const johnClientData = base64UrlEncode(
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: 'webauthn.create',
+          challenge: regData.options.challenge,
+          origin: 'https://aetheros.test',
+        })
+      )
+    );
     await workerHandler.fetch(
       new Request('https://aetheros.test/api/auth/webauthn/register-verify', {
         method: 'POST',
@@ -1633,7 +1643,7 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
         body: JSON.stringify({
           challenge_id: regData.challenge_id,
           user_id: regData.user_id,
-          credential: { id: credId, public_key: 'pk_test' },
+          credential: { id: credId, public_key: 'pk_test', response: { clientDataJSON: johnClientData } },
         }),
       }),
       env
@@ -1704,6 +1714,15 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
       env
     );
     const regData: any = await regRes.json();
+    const opClientData = base64UrlEncode(
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: 'webauthn.create',
+          challenge: regData.options.challenge,
+          origin: 'https://aetheros.test',
+        })
+      )
+    );
     const verifyRes = await workerHandler.fetch(
       new Request('https://aetheros.test/api/auth/webauthn/register-verify', {
         method: 'POST',
@@ -1711,7 +1730,7 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
         body: JSON.stringify({
           challenge_id: regData.challenge_id,
           user_id: regData.user_id,
-          credential: { id: 'cred_op_01', public_key: 'pk_op_01' },
+          credential: { id: 'cred_op_01', public_key: 'pk_op_01', response: { clientDataJSON: opClientData } },
         }),
       }),
       env
@@ -1812,5 +1831,286 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
     const restartData: any = await restartRes.json();
     assert.equal(restartData.status, 'starting');
   });
+
+  it('rejects unverified passkey registration without valid clientDataJSON or wrong challenge ownership', async () => {
+    const { env } = createMigratedWorkerEnv();
+
+    const regRes = await callWorker(env, 'POST', '/api/auth/register', {
+      name: 'Strict Verifier',
+      email: 'strict@aetheros.dev',
+      terms_accepted: true,
+      privacy_accepted: true,
+    });
+    assert.equal(regRes.status, 201);
+
+    // 1. Missing clientDataJSON -> rejected with 400
+    const missingClientDataRes = await callWorker(env, 'POST', '/api/auth/webauthn/register-verify', {
+      challenge_id: regRes.data.challenge_id,
+      user_id: regRes.data.user_id,
+      credential: {
+        id: 'cred_unverified_01',
+        public_key: 'pk_01',
+      },
+    });
+    assert.equal(missingClientDataRes.status, 400);
+
+    // 2. Wrong user_id ownership -> rejected with 403
+    const validClientData = base64UrlEncode(
+      new TextEncoder().encode(
+        JSON.stringify({
+          type: 'webauthn.create',
+          challenge: regRes.data.options.challenge,
+          origin: 'https://aetheros-test.workers.dev',
+        })
+      )
+    );
+    const wrongOwnerRes = await callWorker(env, 'POST', '/api/auth/webauthn/register-verify', {
+      challenge_id: regRes.data.challenge_id,
+      user_id: 'usr_wrong_account_id',
+      credential: {
+        id: 'cred_unverified_01',
+        public_key: 'pk_01',
+        response: { clientDataJSON: validClientData },
+      },
+    });
+    assert.equal(wrongOwnerRes.status, 403);
+
+    // 3. Account remains pending_verification until valid verification completes
+    const loginBeforeVerify = await callWorker(env, 'POST', '/api/auth/login/challenge', {
+      email: 'strict@aetheros.dev',
+    });
+    assert.equal(loginBeforeVerify.status, 403);
+  });
+
+  it('enforces capability-aware scheduling, idempotency keys, result validation, and retryable failures', async () => {
+    const { env } = createMigratedWorkerEnv();
+
+    // Register a small 1-GPU 6GB VRAM worker that only supports 'text'
+    const smallWorkerReg = await callWorker(env, 'POST', '/api/workers/register', {
+      name: 'Edge 6GB Node',
+      provider: 'self_hosted',
+      gpu_model: 'RTX 3060 Mobile',
+      gpu_count: 1,
+      vram_mb: 6144,
+      system_ram_mb: 16384,
+      capabilities: ['text'],
+      loaded_models: ['whisper-large-v3-turbo'],
+    });
+    assert.equal(smallWorkerReg.status, 201);
+    const smallWorkerId = smallWorkerReg.data.worker.id;
+    const smallApiKey = smallWorkerReg.data.api_key;
+
+    // Register a Kaggle 2x T4 30GB VRAM worker supporting coding, text, image, video
+    const kaggleReg = await callWorker(env, 'POST', '/api/workers/register', {
+      name: 'Kaggle Dual T4 Node',
+      provider: 'kaggle',
+      gpu_model: 'NVIDIA Tesla T4',
+      gpu_count: 2,
+      vram_mb: 30720,
+      system_ram_mb: 32768,
+      capabilities: ['coding', 'text', 'image', 'video'],
+      loaded_models: ['qwen-2.5-coder-14b', 'sdxl-lightning', 'animatediff-motion-v3'],
+    });
+    assert.equal(kaggleReg.status, 201);
+    const kaggleWorkerId = kaggleReg.data.worker.id;
+    const kaggleApiKey = kaggleReg.data.api_key;
+
+    // Submit a 14GB VRAM coding task with an idempotency key
+    const taskRes1 = await callWorker(env, 'POST', '/api/tasks', {
+      agent_id: 'agent_code_architect',
+      title: 'Synthesize D1 Migration & Worker Handler',
+      description: 'Generate SQLite schema and TypeScript handler',
+      idempotency_key: 'idem_code_task_001',
+      max_retries: 2,
+      input_payload: {
+        model: 'qwen-2.5-coder-14b',
+        require_gpu: true,
+        min_vram_mb: 14336,
+        min_gpu_count: 2,
+        required_capability: 'coding',
+      },
+    });
+    assert.equal(taskRes1.status, 201);
+    assert.equal(taskRes1.data.deduplicated, false);
+    const taskId = taskRes1.data.task.id;
+
+    // Duplicate submission with same idempotency_key returns existing task without creating a duplicate
+    const taskRes2 = await callWorker(env, 'POST', '/api/tasks', {
+      agent_id: 'agent_code_architect',
+      title: 'Synthesize D1 Migration & Worker Handler',
+      idempotency_key: 'idem_code_task_001',
+    });
+    assert.equal(taskRes2.status, 200);
+    assert.equal(taskRes2.data.deduplicated, true);
+    assert.equal(taskRes2.data.task.id, taskId);
+
+    // Small 6GB 1-GPU worker attempts to claim -> receives null (incompatible hardware & model)
+    const smallClaim = await callWorker(
+      env,
+      'POST',
+      '/api/workers/claim-task',
+      { worker_id: smallWorkerId },
+      workerHeaders(smallApiKey, smallWorkerId)
+    );
+    assert.equal(smallClaim.status, 200);
+    assert.equal(smallClaim.data.task, null);
+
+    // Kaggle 2x T4 30GB worker claims -> receives the task
+    const kaggleClaim = await callWorker(
+      env,
+      'POST',
+      '/api/workers/claim-task',
+      { worker_id: kaggleWorkerId },
+      workerHeaders(kaggleApiKey, kaggleWorkerId)
+    );
+    assert.equal(kaggleClaim.status, 200);
+    assert.ok(kaggleClaim.data.task);
+    assert.equal(kaggleClaim.data.task.id, taskId);
+
+    // Submitting an empty result_payload is rejected with 400 (never mark completed without real output)
+    const emptyResultRes = await callWorker(
+      env,
+      'POST',
+      `/api/workers/tasks/${taskId}/result`,
+      { worker_id: kaggleWorkerId, result_payload: '   ' },
+      workerHeaders(kaggleApiKey, kaggleWorkerId)
+    );
+    assert.equal(emptyResultRes.status, 400);
+
+    // Simulate transient OOM / retryable failure -> task is re-queued because retry_count < max_retries
+    const retryFailRes = await callWorker(
+      env,
+      'POST',
+      `/api/workers/tasks/${taskId}/fail`,
+      { worker_id: kaggleWorkerId, error_message: 'Transient CUDA allocation spike', retryable: true },
+      workerHeaders(kaggleApiKey, kaggleWorkerId)
+    );
+    assert.equal(retryFailRes.status, 200);
+
+    // Kaggle worker can re-claim the re-queued task and complete it with valid output
+    const reclaimRes = await callWorker(
+      env,
+      'POST',
+      '/api/workers/claim-task',
+      { worker_id: kaggleWorkerId },
+      workerHeaders(kaggleApiKey, kaggleWorkerId)
+    );
+    assert.equal(reclaimRes.status, 200);
+    assert.ok(reclaimRes.data.task);
+    assert.equal(reclaimRes.data.task.id, taskId);
+
+    const validCompleteRes = await callWorker(
+      env,
+      'POST',
+      `/api/workers/tasks/${taskId}/result`,
+      {
+        worker_id: kaggleWorkerId,
+        result_payload: {
+          code: 'export default { async fetch() { return new Response("ok"); } };',
+          model: 'qwen-2.5-coder-14b',
+        },
+        execution_Host: 'Kaggle 2x T4',
+      },
+      workerHeaders(kaggleApiKey, kaggleWorkerId)
+    );
+    assert.equal(validCompleteRes.status, 200);
+    assert.equal(validCompleteRes.data.status, 'completed');
+  });
+
+  it('executes authorized defensive Cybersecurity Agent assessments and blocks unauthorized or SSRF targets', async () => {
+    const { env } = createMigratedWorkerEnv();
+
+    // 1. Missing authorization_confirmed is rejected with 403
+    const unauthRes = await callWorker(env, 'POST', '/api/security/assess', {
+      operation: 'full_audit',
+      authorization_confirmed: false,
+      source_code: 'const x = eval(userInput);',
+    });
+    assert.equal(unauthRes.status, 403);
+
+    // 2. Private/loopback SSRF target URL is rejected with 400
+    const ssrfRes = await callWorker(env, 'POST', '/api/security/assess', {
+      operation: 'header_analysis',
+      authorization_confirmed: true,
+      target_url: 'http://169.254.169.254/latest/meta-data/',
+    });
+    assert.equal(ssrfRes.status, 400);
+
+    // 3. Valid defensive code + dependency audit detects verified findings and archives report in R2
+    const auditRes = await callWorker(env, 'POST', '/api/security/assess', {
+      operation: 'full_audit',
+      authorization_confirmed: true,
+      code_filename: 'unsafe_worker.ts',
+      source_code: `
+        const AWS_KEY = "AKIA1234567890ABCDEF";
+        export function run(input: string) {
+          return eval(input);
+        }
+      `,
+      package_json: JSON.stringify({
+        dependencies: {
+          lodash: '4.17.15',
+          axios: '0.21.1',
+        },
+      }),
+    });
+    assert.equal(auditRes.status, 200);
+    assert.equal(auditRes.data.success, true);
+    assert.ok(auditRes.data.assessment);
+    assert.ok(auditRes.data.assessment.summary.total_findings >= 3);
+    assert.ok(auditRes.data.assessment.summary.verified_findings >= 3);
+    assert.ok(auditRes.data.report_file_id);
+    assert.ok(
+      auditRes.data.assessment.findings.some(
+        (f: any) => f.classification === 'verified_finding' && f.category === 'source_code'
+      )
+    );
+    assert.ok(
+      auditRes.data.assessment.findings.some(
+        (f: any) => f.classification === 'verified_finding' && f.category === 'dependencies'
+      )
+    );
+  });
+
+  it('persists development server state across restarts when persistPath is configured', async () => {
+    const tmpPersistPath = path.join(ROOT_DIR, '.data', `test-persist-${Date.now()}.json`);
+    try {
+      const app1 = await createAetherApp({ disableVite: true, persistPath: tmpPersistPath });
+      const server1 = http.createServer(app1);
+      await new Promise<void>((resolve) => server1.listen(0, '127.0.0.1', resolve));
+      const port1 = (server1.address() as any).port;
+
+      const createRes = await fetch(`http://127.0.0.1:${port1}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: 'agent_code_architect',
+          title: 'Persisted Dev Server Task',
+          idempotency_key: 'dev_persist_001',
+        }),
+      });
+      assert.equal(createRes.status, 201);
+      const createdTask: any = await createRes.json();
+      await new Promise<void>((resolve) => server1.close(() => resolve()));
+
+      // Boot second instance pointing at the same persistPath
+      const app2 = await createAetherApp({ disableVite: true, persistPath: tmpPersistPath });
+      const server2 = http.createServer(app2);
+      await new Promise<void>((resolve) => server2.listen(0, '127.0.0.1', resolve));
+      const port2 = (server2.address() as any).port;
+
+      const listRes = await fetch(`http://127.0.0.1:${port2}/api/tasks`);
+      assert.equal(listRes.status, 200);
+      const tasksBody: any = await listRes.json();
+      const tasksList: any[] = Array.isArray(tasksBody) ? tasksBody : tasksBody.tasks || [];
+      assert.ok(tasksList.some((t) => t.id === createdTask.task.id));
+      await new Promise<void>((resolve) => server2.close(() => resolve()));
+    } finally {
+      if (fs.existsSync(tmpPersistPath)) {
+        fs.unlinkSync(tmpPersistPath);
+      }
+    }
+  });
 });
+
 

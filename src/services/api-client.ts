@@ -127,15 +127,20 @@ class ApiClient {
     description: string;
     inputPayload: Record<string, unknown>;
     priority: 'low' | 'medium' | 'high' | 'critical';
+    idempotencyKey?: string;
+    workspaceId?: string;
   }): Promise<Task> {
     const data = await this.request<{ success: boolean; task: Task }>('/api/tasks', {
       method: 'POST',
+      headers: params.idempotencyKey ? { 'Idempotency-Key': params.idempotencyKey } : undefined,
       body: JSON.stringify({
         agent_id: params.agentId,
         title: params.title,
         description: params.description,
         input_payload: params.inputPayload,
         priority: params.priority,
+        idempotency_key: params.idempotencyKey,
+        workspace_id: params.workspaceId,
       }),
     });
     return data.task;
@@ -169,8 +174,9 @@ class ApiClient {
   }
 
   // --- FILES (R2 STORAGE) ---
-  async getFiles(): Promise<AttachedFile[]> {
-    const data = await this.request<{ success: boolean; files: any[] }>('/api/files');
+  async getFiles(taskId?: string): Promise<AttachedFile[]> {
+    const query = taskId ? `?task_id=${encodeURIComponent(taskId)}` : '';
+    const data = await this.request<{ success: boolean; files: any[] }>(`/api/files${query}`);
     return (data.files || []).map(f => ({
       id: f.key,
       r2_key: f.key,
@@ -191,13 +197,20 @@ class ApiClient {
     formData.append('file', file);
     if (taskId) formData.append('task_id', taskId);
 
+    const headers: Record<string, string> = {};
+    if (this.sessionToken) {
+      headers['Authorization'] = `Bearer ${this.sessionToken}`;
+    }
+
     const res = await fetch('/api/files', {
       method: 'POST',
+      headers,
       body: formData,
     });
 
     if (!res.ok) {
-      throw new Error(`File upload failed: ${res.statusText}`);
+      const errText = await res.text().catch(() => res.statusText);
+      throw new Error(`File upload failed: ${errText}`);
     }
 
     const data = await res.json() as any;
@@ -376,10 +389,20 @@ class ApiClient {
     privacy_accepted: boolean;
   }): Promise<{
     success: boolean;
-    user: UserAccount;
-    organization: Organization;
+    user_id: string;
+    challenge_id: string;
+    user: { id: string; email?: string; name?: string };
     challenge: {
       id: string;
+      challenge: string;
+      rpId: string;
+      rp?: { id: string; name: string };
+      user?: { id: string; name: string; displayName: string };
+      pubKeyCredParams?: { type: string; alg: number }[];
+      timeout?: number;
+      authenticatorSelection?: Record<string, unknown>;
+    };
+    options: {
       challenge: string;
       rp: { id: string; name: string };
       user: { id: string; name: string; displayName: string };
@@ -388,29 +411,42 @@ class ApiClient {
       authenticatorSelection: Record<string, unknown>;
     };
   }> {
-    return this.request('/api/auth/register', {
+    const res = await this.request<any>('/api/auth/register', {
       method: 'POST',
       body: JSON.stringify(params),
     });
+    const chgObj =
+      res.challenge && typeof res.challenge === 'object'
+        ? res.challenge
+        : {
+            id: res.challenge_id,
+            challenge: res.options?.challenge || res.challenge || '',
+            rpId: res.options?.rp?.id || res.rp_id || window.location.hostname,
+            ...(res.options || {}),
+          };
+    return {
+      ...res,
+      user: res.user || { id: res.user_id, email: params.email, name: params.name },
+      challenge: chgObj,
+    };
   }
 
   async verifyWebAuthnRegister(params: {
     challenge_id: string;
-    credential: any;
+    user_id?: string;
     credential_name?: string;
+    credential: any;
   }): Promise<{
     success: boolean;
     session_token: string;
     user: UserAccount;
-    organization: Organization;
-    passkey: PasskeyItem;
+    workspace: Organization;
   }> {
     const res = await this.request<{
       success: boolean;
       session_token: string;
       user: UserAccount;
-      organization: Organization;
-      passkey: PasskeyItem;
+      workspace: Organization;
     }>('/api/auth/webauthn/register-verify', {
       method: 'POST',
       body: JSON.stringify(params),
@@ -421,41 +457,114 @@ class ApiClient {
     return res;
   }
 
-  async getLoginChallenge(email: string): Promise<{
+  async enrollPasskeyChallenge(): Promise<{
     success: boolean;
+    user_id: string;
+    challenge_id: string;
+    options: Record<string, any>;
     challenge: {
       id: string;
       challenge: string;
       rpId: string;
-      allowCredentials: { id: string; type: string }[];
-      timeout: number;
-      has_totp: boolean;
-      passkey_count: number;
+      user?: { id: string; name: string; displayName: string };
+      timeout?: number;
     };
   }> {
-    return this.request('/api/auth/login/challenge', {
+    const res = await this.request<any>('/api/auth/passkeys/enroll-challenge', {
+      method: 'POST',
+    });
+    const chgObj =
+      res.challenge && typeof res.challenge === 'object'
+        ? res.challenge
+        : {
+            id: res.challenge_id,
+            challenge: res.options?.challenge || res.challenge || '',
+            rpId: res.options?.rp?.id || window.location.hostname,
+            user: res.options?.user,
+            timeout: res.options?.timeout || 60000,
+          };
+    return {
+      ...res,
+      challenge: chgObj,
+    };
+  }
+
+  async getLoginChallenge(email: string): Promise<{
+    success: boolean;
+    challenge_id: string;
+    rp_id: string;
+    has_passkeys: boolean;
+    has_totp: boolean;
+    allow_credentials: { id: string; type: string; transports?: string[] }[];
+    challenge: {
+      id: string;
+      challenge: string;
+      rpId: string;
+      allowCredentials: { id: string; type: string; transports?: string[] }[];
+      timeout: number;
+    };
+  }> {
+    const res = await this.request<any>('/api/auth/login/challenge', {
       method: 'POST',
       body: JSON.stringify({ email }),
     });
+    const allowList = (res.allow_credentials || []).map((c: any) =>
+      typeof c === 'string' ? { id: c, type: 'public-key' } : c
+    );
+    const chgObj =
+      res.challenge && typeof res.challenge === 'object'
+        ? res.challenge
+        : {
+            id: res.challenge_id,
+            challenge: String(res.challenge || ''),
+            rpId: res.rp_id || window.location.hostname,
+            allowCredentials: allowList,
+            timeout: 60000,
+          };
+    return {
+      ...res,
+      allow_credentials: allowList,
+      challenge: chgObj,
+    };
   }
 
   async loginPasskey(params: {
     challenge_id: string;
-    credential: any;
+    credential_id?: string;
+    clientDataJSON?: string;
+    authenticatorData?: string;
+    signature?: string;
+    credential?: any;
   }): Promise<{
     success: boolean;
     session_token: string;
     user: UserAccount;
-    organization: Organization;
+    workspace: Organization;
   }> {
+    const payload = {
+      ...params,
+      credential_id: params.credential_id || params.credential?.id,
+      clientDataJSON:
+        params.clientDataJSON ||
+        params.credential?.response?.clientDataJSON ||
+        params.credential?.clientDataJSON,
+      authenticatorData:
+        params.authenticatorData ||
+        params.credential?.response?.authenticatorData ||
+        params.credential?.authenticatorData,
+      signature:
+        params.signature ||
+        params.credential?.response?.signature ||
+        params.credential?.signature,
+    };
     const res = await this.request<{
       success: boolean;
       session_token: string;
       user: UserAccount;
-      organization: Organization;
+      workspace: Organization;
     }>('/api/auth/login/passkey', {
       method: 'POST',
-      body: JSON.stringify(params),
+      body: JSON.stringify(payload),
     });
     if (res.session_token) {
       this.setSessionToken(res.session_token);
@@ -470,13 +579,13 @@ class ApiClient {
     success: boolean;
     session_token: string;
     user: UserAccount;
-    organization: Organization;
+    workspace: Organization;
   }> {
     const res = await this.request<{
       success: boolean;
       session_token: string;
       user: UserAccount;
-      organization: Organization;
+      workspace: Organization;
     }>('/api/auth/login/totp', {
       method: 'POST',
       body: JSON.stringify(params),
@@ -488,13 +597,18 @@ class ApiClient {
   }
 
   async getMe(): Promise<{
-    success: boolean;
-    user: UserAccount;
-    session: { id: string; organization_id?: string; expires_at: string };
-    organizations: Organization[];
-    current_organization?: Organization;
-    has_totp: boolean;
-    passkeys: PasskeyItem[];
+    authenticated: boolean;
+    user: UserAccount | null;
+    workspace?: Organization | null;
+    active_workspace?: Organization | null;
+    current_organization?: Organization | null;
+    workspaces?: Organization[];
+    organizations?: Organization[];
+    has_totp?: boolean;
+    totp_enabled?: boolean;
+    passkeys?: PasskeyItem[];
+    passkeys_count?: number;
+    owned_workers?: WorkerOwnershipInfo[];
   }> {
     return this.request('/api/auth/me');
   }
@@ -516,19 +630,33 @@ class ApiClient {
     await this.request(`/api/auth/passkeys/${id}`, { method: 'DELETE' });
   }
 
+  private lastTotpSetupSecret: string | null = null;
+
   async setupTotp(): Promise<{
     success: boolean;
     secret: string;
     otpauth_url: string;
     account_email: string;
   }> {
-    return this.request('/api/auth/totp/setup', { method: 'POST' });
+    const res = await this.request<{
+      success: boolean;
+      secret: string;
+      otpauth_url: string;
+      account_email?: string;
+    }>('/api/auth/totp/setup', { method: 'POST' });
+    this.lastTotpSetupSecret = res.secret;
+    return {
+      ...res,
+      account_email: res.account_email || 'operator@aetheros.dev',
+    };
   }
 
-  async verifyTotpSetup(code: string): Promise<{ success: boolean }> {
+  async verifyTotpSetup(secretOrCode: string, maybeCode?: string): Promise<{ success: boolean }> {
+    const secret = maybeCode ? secretOrCode : (this.lastTotpSetupSecret || '');
+    const code = maybeCode ? maybeCode : secretOrCode;
     return this.request('/api/auth/totp/verify-setup', {
       method: 'POST',
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ secret, code }),
     });
   }
 
@@ -547,16 +675,15 @@ class ApiClient {
   }
 
   async getWorkerOwnership(): Promise<WorkerOwnershipInfo[]> {
-    const data = await this.request<{ success: boolean; ownerships: WorkerOwnershipInfo[] }>('/api/workers/ownership');
-    return data.ownerships || [];
+    const data = await this.request<{ success: boolean; ownerships?: WorkerOwnershipInfo[]; workers?: WorkerOwnershipInfo[] }>('/api/workers/ownership');
+    return data.ownerships || data.workers || [];
   }
 
-  async claimWorker(workerId: string, ownershipType: 'personal' | 'organization' = 'personal'): Promise<WorkerOwnershipInfo> {
-    const data = await this.request<{ success: boolean; ownership: WorkerOwnershipInfo }>(`/api/workers/${workerId}/claim`, {
+  async claimWorker(workerId: string, ownershipType: 'personal' | 'organization' = 'personal'): Promise<any> {
+    return this.request(`/api/workers/${workerId}/claim`, {
       method: 'POST',
       body: JSON.stringify({ ownership_type: ownershipType }),
     });
-    return data.ownership;
   }
 
   // --- COMPUTE SESSIONS & KAGGLE MANAGER ---
@@ -609,6 +736,33 @@ class ApiClient {
   async getKaggleCredentialsStatus(): Promise<KaggleCredentialsStatus> {
     return this.request('/api/compute/kaggle-credentials/status');
   }
+
+  // --- DEFENSIVE CYBERSECURITY AGENT (PHASE 10) ---
+  async assessSecurity(params: {
+    scope: 'website_headers_tls' | 'dns_security' | 'dependency_audit' | 'source_code_audit' | 'full_audit';
+    target_url?: string;
+    domain?: string;
+    package_json?: string | Record<string, unknown>;
+    source_code?: string;
+    source_filename?: string;
+    authorization_confirmed: boolean;
+    authorized_scope_note?: string;
+  }): Promise<{
+    success: boolean;
+    report: any;
+    artifacts: { markdown_key: string; json_key: string };
+  }> {
+    return this.request('/api/security/assess', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async getSecurityEvents(): Promise<any[]> {
+    const data = await this.request<{ success: boolean; events: any[] }>('/api/security/events');
+    return data.events || [];
+  }
 }
 
 export const apiClient = new ApiClient();
+

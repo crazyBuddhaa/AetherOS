@@ -1,18 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp, ScreenplayScene } from '../../context/AppContext';
 import {
-  Feather,
   Plus,
   Clapperboard,
   Sparkles,
   Download,
-  FileText,
   Trash2,
-  AlignLeft,
-  User,
-  MessageSquare,
-  ArrowRight,
   RefreshCw,
+  Cpu,
+  AlertTriangle,
+  CheckCircle2,
 } from 'lucide-react';
 
 export const ScreenwriterWorkspaceView: React.FC = () => {
@@ -22,6 +19,8 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
     extractSceneToStoryboard,
     uploadFile,
     submitTask,
+    tasks,
+    workers,
     setActiveTab,
     showNotification,
   } = useApp();
@@ -29,9 +28,76 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
   const [selectedSceneId, setSelectedSceneId] = useState<string>(screenplayScenes[0]?.id || '');
   const [beatDirective, setBeatDirective] = useState<string>('');
   const [isGeneratingBeat, setIsGeneratingBeat] = useState<boolean>(false);
+  const [activeBeatTaskId, setActiveBeatTaskId] = useState<string | null>(null);
+  const [syncedBeatTasks, setSyncedBeatTasks] = useState<Record<string, boolean>>({});
 
   const activeScene: ScreenplayScene =
     screenplayScenes.find(s => s.id === selectedSceneId) || screenplayScenes[0];
+
+  const onlineTextWorkers = workers.filter(
+    w =>
+      (w.status === 'online' || w.status === 'busy') &&
+      (!w.capabilities || w.capabilities.length === 0 || w.capabilities.includes('text'))
+  );
+
+  const activeBeatTask = activeBeatTaskId ? tasks.find(t => t.id === activeBeatTaskId) : null;
+
+  // Bind real worker completion output into screenplay scene blocks
+  useEffect(() => {
+    if (!activeBeatTask || activeBeatTask.status !== 'completed' || syncedBeatTasks[activeBeatTask.id]) {
+      return;
+    }
+
+    let parsed: Record<string, any> = {};
+    try {
+      parsed =
+        typeof activeBeatTask.result_payload === 'string'
+          ? JSON.parse(activeBeatTask.result_payload)
+          : (activeBeatTask.result_payload as Record<string, any>) || {};
+    } catch {
+      parsed = { raw_text: activeBeatTask.result_payload };
+    }
+
+    const outputText =
+      parsed.dialogue ||
+      parsed.output ||
+      parsed.text ||
+      parsed.raw_text ||
+      (typeof activeBeatTask.result_payload === 'string' ? activeBeatTask.result_payload : '');
+
+    if (!outputText) return;
+
+    const now = Date.now();
+    const generatedBlocks: ScreenplayScene['blocks'] = Array.isArray(parsed.blocks)
+      ? parsed.blocks
+      : [
+          {
+            id: `b_${now}_a`,
+            type: 'action',
+            text: parsed.action || `Dramaturg Beat (${activeBeatTask.title}):`,
+          },
+          {
+            id: `b_${now}_c`,
+            type: 'character',
+            text: parsed.character || 'ELENA',
+          },
+          {
+            id: `b_${now}_d`,
+            type: 'dialogue',
+            text: String(outputText).slice(0, 600),
+          },
+        ];
+
+    setSyncedBeatTasks(prev => ({ ...prev, [activeBeatTask.id]: true }));
+    setScreenplayScenes(prev =>
+      prev.map(scene =>
+        scene.id === activeScene.id
+          ? { ...scene, blocks: [...scene.blocks, ...generatedBlocks] }
+          : scene
+      )
+    );
+    showNotification('Appended verified dramatic beat from worker execution', 'success');
+  }, [activeBeatTask, syncedBeatTasks, activeScene?.id, setScreenplayScenes, showNotification]);
 
   const handleUpdateBlockText = (blockId: string, text: string) => {
     setScreenplayScenes(prev =>
@@ -127,7 +193,7 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
     setIsGeneratingBeat(true);
 
     try {
-      await submitTask({
+      const task = await submitTask({
         agentId: 'agent_screenwriter',
         title: `Screenplay Beat Synthesis: Scene ${activeScene.sceneNumber}`,
         description: directive,
@@ -136,43 +202,25 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
           model: 'deepseek-r1-distill-qwen-14b',
           scene_slugline: activeScene.slugline,
           directive,
+          require_gpu: true,
+          min_vram_mb: 10240,
+          required_capability: 'text',
         },
         priority: 'medium',
-      }).catch(() => {});
+      });
 
-      const now = Date.now();
-      const generatedBlocks: ScreenplayScene['blocks'] = [
-        {
-          id: `b_${now}_a`,
-          type: 'action',
-          text: `Beat expansion (${directive}): The terminal monitor reflects across the glass partition as the secondary node comes online.`,
-        },
-        {
-          id: `b_${now}_c`,
-          type: 'character',
-          text: 'ELENA',
-        },
-        {
-          id: `b_${now}_p`,
-          type: 'parenthetical',
-          text: '(studying the latency trace)',
-        },
-        {
-          id: `b_${now}_d`,
-          type: 'dialogue',
-          text: 'Two milliseconds across the fjord link. Keep the camera rig steady—we are rolling live on the primary array.',
-        },
-      ];
-
-      setScreenplayScenes(prev =>
-        prev.map(scene =>
-          scene.id === activeScene.id
-            ? { ...scene, blocks: [...scene.blocks, ...generatedBlocks] }
-            : scene
-        )
-      );
+      setActiveBeatTaskId(task.id);
       setBeatDirective('');
-      showNotification('Appended dramatic beat via DeepSeek R1 Dramaturg', 'success');
+      if (onlineTextWorkers.length === 0) {
+        showNotification(
+          `Beat synthesis task ${task.id.slice(0, 12)} queued in D1. Waiting for a GPU compute worker running deepseek-r1-distill-qwen-14b.`,
+          'info'
+        );
+      } else {
+        showNotification(`Dispatched screenplay beat task ${task.id.slice(0, 12)} to worker grid`, 'success');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Failed to dispatch screenplay beat task', 'error');
     } finally {
       setIsGeneratingBeat(false);
     }
@@ -389,14 +437,50 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
         {/* Right: AI Dramaturg & Storyboard Handoff (3 cols) */}
         <div className="lg:col-span-3 min-w-0 space-y-4">
           <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4">
-            <div className="flex items-center gap-2 text-xs font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
-              <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              <span>AI Dramaturg & Beat Architect</span>
+            <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+                <span>AI Dramaturg</span>
+              </div>
+              <span className="text-[10px] font-mono text-slate-500 flex items-center gap-1">
+                <Cpu className="w-3 h-3" />
+                {onlineTextWorkers.length > 0 ? `${onlineTextWorkers.length} online` : 'Queue'}
+              </span>
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-              Generate dialogue exchanges, tighten scene pacing, or expand action beats using <span className="font-mono text-slate-800 dark:text-slate-200">deepseek-r1-distill-qwen-14b</span>.
+              Dispatch scene beat synthesis to <span className="font-mono text-slate-800 dark:text-slate-200">deepseek-r1-distill-qwen-14b</span> on the GPU worker grid.
             </p>
+
+            {activeBeatTask && (
+              <div
+                className={`p-3 rounded-lg border text-[11px] space-y-1 ${
+                  activeBeatTask.status === 'completed'
+                    ? 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200'
+                    : activeBeatTask.status === 'failed'
+                    ? 'border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200'
+                    : 'border-blue-200 dark:border-blue-900/50 bg-blue-50/60 dark:bg-blue-950/30 text-blue-800 dark:text-blue-200'
+                }`}
+              >
+                <div className="flex items-center gap-1.5 font-semibold">
+                  {activeBeatTask.status === 'completed' ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  ) : activeBeatTask.status === 'failed' ? (
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                  ) : (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                  )}
+                  <span className="font-mono uppercase">{activeBeatTask.status}</span>
+                </div>
+                <div className="opacity-85">
+                  {activeBeatTask.status === 'queued' && onlineTextWorkers.length === 0
+                    ? 'Task queued in D1. Waiting for an online GPU worker with deepseek-r1-distill-qwen-14b.'
+                    : activeBeatTask.error_message ||
+                      activeBeatTask.progress_stage ||
+                      `Task ID: ${activeBeatTask.id.slice(0, 14)}`}
+                </div>
+              </div>
+            )}
 
             <form onSubmit={handleSynthesizeDramaturgBeat} className="space-y-3">
               <div>
@@ -420,12 +504,12 @@ export const ScreenwriterWorkspaceView: React.FC = () => {
                 {isGeneratingBeat ? (
                   <>
                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                    <span>Writing Beat...</span>
+                    <span>Dispatching Task...</span>
                   </>
                 ) : (
                   <>
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Generate Scene Beat</span>
+                    <span>Dispatch Beat Synthesis Task</span>
                   </>
                 )}
               </button>

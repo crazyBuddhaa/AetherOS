@@ -13,7 +13,6 @@ import type {
   Message,
   UserAccount,
   Organization,
-  OrganizationMembership,
   PasskeyCredential,
   TotpCredential,
   AuthChallenge,
@@ -22,6 +21,7 @@ import type {
   WorkerOwnership,
   KaggleCredentials,
   SecurityAuditEvent,
+  GpuDeviceSpec,
 } from './types.ts';
 import {
   ACTIVE_WORKER_TASK_STATUSES,
@@ -55,6 +55,7 @@ export interface TaskMutationOutcome {
   error?: string;
   stepStatus?: TaskStepStatus;
   taskStatus?: string;
+  retried?: boolean;
 }
 
 const PUBLIC_WORKER_COLUMNS = `
@@ -80,6 +81,8 @@ const PUBLIC_WORKER_COLUMNS = `
   w.updated_at
 `;
 
+const memoryRateLimitFallback = new Map<string, { count: number; expiresAt: number }>();
+
 /**
  * Cloudflare D1 Database Repository & Queries
  */
@@ -103,6 +106,31 @@ export class D1DatabaseService {
       }
     }
 
+    let parsedLoadedModels: string[] = [];
+    if (Array.isArray(row.loaded_models)) {
+      parsedLoadedModels = row.loaded_models;
+    } else if (typeof row.loaded_models === 'string' && row.loaded_models.length > 0) {
+      try {
+        const parsed = JSON.parse(row.loaded_models);
+        if (Array.isArray(parsed)) parsedLoadedModels = parsed;
+      } catch {
+        parsedLoadedModels = [];
+      }
+    }
+
+    let parsedGpuDevices: GpuDeviceSpec[] = [];
+    const rawGpuDevices = row.gpu_devices_json ?? row.gpu_devices;
+    if (Array.isArray(rawGpuDevices)) {
+      parsedGpuDevices = rawGpuDevices;
+    } else if (typeof rawGpuDevices === 'string' && rawGpuDevices.length > 0) {
+      try {
+        const parsed = JSON.parse(rawGpuDevices);
+        if (Array.isArray(parsed)) parsedGpuDevices = parsed;
+      } catch {
+        parsedGpuDevices = [];
+      }
+    }
+
     return {
       id: row.id,
       name: row.name,
@@ -114,6 +142,8 @@ export class D1DatabaseService {
       status: row.status,
       key_prefix: row.key_prefix || undefined,
       capabilities: parsedCapabilities,
+      loaded_models: parsedLoadedModels,
+      gpu_devices: parsedGpuDevices,
       contributor_name: row.contributor_name || undefined,
       contributor_email: row.contributor_email || undefined,
       current_task_id: row.current_task_id || undefined,
@@ -138,6 +168,82 @@ export class D1DatabaseService {
           ? Number(row.gpu_temperature_c)
           : undefined,
     };
+  }
+
+  // --- RATE LIMITING ---
+  async checkRateLimit(
+    bucketKey: string,
+    maxRequests = 30,
+    windowMs = 60_000
+  ): Promise<{ allowed: boolean; remaining: number; retryAfterSeconds: number }> {
+    const now = Date.now();
+    const expiresAt = now + windowMs;
+    try {
+      await this.db
+        .prepare('DELETE FROM auth_rate_limits WHERE window_expires_at < ?')
+        .bind(now)
+        .run();
+
+      const existing = await this.db
+        .prepare('SELECT request_count, window_expires_at FROM auth_rate_limits WHERE bucket_key = ?')
+        .bind(bucketKey)
+        .first<any>();
+
+      if (!existing || Number(existing.window_expires_at) <= now) {
+        await this.db
+          .prepare(
+            'INSERT OR REPLACE INTO auth_rate_limits (bucket_key, request_count, window_expires_at) VALUES (?, 1, ?)'
+          )
+          .bind(bucketKey, expiresAt)
+          .run();
+        return {
+          allowed: true,
+          remaining: Math.max(0, maxRequests - 1),
+          retryAfterSeconds: Math.ceil(windowMs / 1000),
+        };
+      }
+
+      const nextCount = Number(existing.request_count) + 1;
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((Number(existing.window_expires_at) - now) / 1000)
+      );
+      if (nextCount > maxRequests) {
+        return { allowed: false, remaining: 0, retryAfterSeconds };
+      }
+
+      await this.db
+        .prepare('UPDATE auth_rate_limits SET request_count = ? WHERE bucket_key = ?')
+        .bind(nextCount, bucketKey)
+        .run();
+
+      return {
+        allowed: true,
+        remaining: Math.max(0, maxRequests - nextCount),
+        retryAfterSeconds,
+      };
+    } catch {
+      // Fallback if migration 0005 table is not present
+      const entry = memoryRateLimitFallback.get(bucketKey);
+      if (!entry || entry.expiresAt <= now) {
+        memoryRateLimitFallback.set(bucketKey, { count: 1, expiresAt });
+        return {
+          allowed: true,
+          remaining: Math.max(0, maxRequests - 1),
+          retryAfterSeconds: Math.ceil(windowMs / 1000),
+        };
+      }
+      entry.count += 1;
+      const retryAfterSeconds = Math.max(1, Math.ceil((entry.expiresAt - now) / 1000));
+      if (entry.count > maxRequests) {
+        return { allowed: false, remaining: 0, retryAfterSeconds };
+      }
+      return {
+        allowed: true,
+        remaining: Math.max(0, maxRequests - entry.count),
+        retryAfterSeconds,
+      };
+    }
   }
 
   // --- AGENTS ---
@@ -222,7 +328,7 @@ export class D1DatabaseService {
   }
 
   // --- TASKS ---
-  async getTasks(status?: string, agentId?: string): Promise<Task[]> {
+  async getTasks(status?: string, agentId?: string, workspaceId?: string): Promise<Task[]> {
     await this.reapExpiredLeases();
 
     let query = `
@@ -241,6 +347,10 @@ export class D1DatabaseService {
       conditions.push('t.agent_id = ?');
       params.push(agentId);
     }
+    if (workspaceId) {
+      conditions.push('t.workspace_id = ?');
+      params.push(workspaceId);
+    }
 
     if (conditions.length > 0) {
       query += ` WHERE ${conditions.join(' AND ')}`;
@@ -254,6 +364,20 @@ export class D1DatabaseService {
       input_payload: JSON.parse(row.input_payload || '{}'),
       result_payload: row.result_payload ? JSON.parse(row.result_payload) : undefined,
     }));
+  }
+
+  async getTaskByIdempotencyKey(userId: string, idempotencyKey: string): Promise<Task | null> {
+    if (!idempotencyKey) return null;
+    try {
+      const row = await this.db
+        .prepare('SELECT id FROM tasks WHERE user_id = ? AND idempotency_key = ? LIMIT 1')
+        .bind(userId, idempotencyKey)
+        .first<any>();
+      if (!row || !row.id) return null;
+      return this.getTaskWithSteps(row.id);
+    } catch {
+      return null;
+    }
   }
 
   async getTaskWithSteps(id: string): Promise<Task | null> {
@@ -285,25 +409,54 @@ export class D1DatabaseService {
 
   async createTask(task: Omit<Task, 'created_at' | 'updated_at'>): Promise<Task> {
     const now = new Date().toISOString();
-    await this.db
-      .prepare(`
-        INSERT INTO tasks (id, agent_id, user_id, title, description, input_payload, priority, status, progress_percent, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .bind(
-        task.id,
-        task.agent_id,
-        task.user_id,
-        task.title,
-        task.description || '',
-        JSON.stringify(task.input_payload || {}),
-        task.priority,
-        task.status,
-        task.progress_percent || 0,
-        now,
-        now
-      )
-      .run();
+    try {
+      await this.db
+        .prepare(`
+          INSERT INTO tasks (
+            id, agent_id, user_id, workspace_id, idempotency_key, title, description,
+            input_payload, priority, status, progress_percent, max_retries, timeout_seconds, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          task.id,
+          task.agent_id,
+          task.user_id,
+          task.workspace_id || null,
+          task.idempotency_key || null,
+          task.title,
+          task.description || '',
+          JSON.stringify(task.input_payload || {}),
+          task.priority,
+          task.status,
+          task.progress_percent || 0,
+          task.max_retries ?? 2,
+          task.timeout_seconds ?? 300,
+          now,
+          now
+        )
+        .run();
+    } catch {
+      // Compatibility fallback for pre-0005 schema
+      await this.db
+        .prepare(`
+          INSERT INTO tasks (id, agent_id, user_id, title, description, input_payload, priority, status, progress_percent, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          task.id,
+          task.agent_id,
+          task.user_id,
+          task.title,
+          task.description || '',
+          JSON.stringify(task.input_payload || {}),
+          task.priority,
+          task.status === 'scheduled' || task.status === 'validating' ? 'queued' : task.status,
+          task.progress_percent || 0,
+          now,
+          now
+        )
+        .run();
+    }
 
     return { ...task, created_at: now, updated_at: now };
   }
@@ -443,6 +596,30 @@ export class D1DatabaseService {
         now
       )
       .run();
+  }
+
+  async getFileMetadataRecords(taskId?: string, uploadedBy?: string): Promise<R2FileRecord[]> {
+    let query = 'SELECT * FROM files';
+    const conds: string[] = [];
+    const params: any[] = [];
+    if (taskId) {
+      conds.push('task_id = ?');
+      params.push(taskId);
+    }
+    if (uploadedBy) {
+      conds.push('uploaded_by = ?');
+      params.push(uploadedBy);
+    }
+    if (conds.length > 0) {
+      query += ` WHERE ${conds.join(' AND ')}`;
+    }
+    query += ' ORDER BY created_at DESC LIMIT 100';
+    try {
+      const { results } = await this.db.prepare(query).bind(...params).all<any>();
+      return (results || []) as R2FileRecord[];
+    } catch {
+      return [];
+    }
   }
 
   // --- ACTIVITY LOGS ---
@@ -697,7 +874,9 @@ export class D1DatabaseService {
       conversation_id: msg.conversation_id,
       sender_type: msg.sender_type,
       content: msg.content,
+      thinking: msg.thinking,
       tool_calls: msg.tool_calls,
+      artifacts: msg.artifacts,
       attachments: msg.attachments,
       tokens_used: msg.tokens_used || 0,
       created_at: now,
@@ -720,7 +899,7 @@ export class D1DatabaseService {
               lease_expires_at = NULL,
               progress_percent = 0,
               updated_at = ?
-          WHERE status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+          WHERE status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
             AND lease_expires_at IS NOT NULL
             AND lease_expires_at < ?
         `)
@@ -759,7 +938,37 @@ export class D1DatabaseService {
       ORDER BY w.status = 'online' DESC, w.status = 'busy' DESC, w.last_heartbeat DESC
     `;
     const { results } = await this.db.prepare(query).all<any>();
-    return (results || []).map((row: any) => this.mapPublicWorker(row));
+    const workers = (results || []).map((row: any) => this.mapPublicWorker(row));
+
+    // Enrich with loaded_models / gpu_devices_json if migration 0005 columns exist
+    try {
+      const { results: extRows } = await this.db
+        .prepare('SELECT id, loaded_models, gpu_devices_json FROM compute_workers')
+        .all<any>();
+      if (extRows && extRows.length > 0) {
+        const extMap = new Map<string, any>();
+        for (const r of extRows) extMap.set(r.id, r);
+        for (const w of workers) {
+          const ext = extMap.get(w.id);
+          if (ext) {
+            try {
+              w.loaded_models = JSON.parse(ext.loaded_models || '[]');
+            } catch {
+              w.loaded_models = [];
+            }
+            try {
+              w.gpu_devices = JSON.parse(ext.gpu_devices_json || '[]');
+            } catch {
+              w.gpu_devices = [];
+            }
+          }
+        }
+      }
+    } catch {
+      // Pre-0005 schema fallback
+    }
+
+    return workers;
   }
 
   async getComputeWorkerById(id: string): Promise<ComputeWorker | null> {
@@ -776,7 +985,31 @@ export class D1DatabaseService {
       `)
       .bind(id)
       .first<any>();
-    return row ? this.mapPublicWorker(row) : null;
+    if (!row) return null;
+    const worker = this.mapPublicWorker(row);
+
+    try {
+      const ext = await this.db
+        .prepare('SELECT loaded_models, gpu_devices_json FROM compute_workers WHERE id = ?')
+        .bind(id)
+        .first<any>();
+      if (ext) {
+        try {
+          worker.loaded_models = JSON.parse(ext.loaded_models || '[]');
+        } catch {
+          worker.loaded_models = [];
+        }
+        try {
+          worker.gpu_devices = JSON.parse(ext.gpu_devices_json || '[]');
+        } catch {
+          worker.gpu_devices = [];
+        }
+      }
+    } catch {
+      // Pre-0005 schema fallback
+    }
+
+    return worker;
   }
 
   async registerComputeWorker(
@@ -787,37 +1020,75 @@ export class D1DatabaseService {
     const now = new Date().toISOString();
     const leaseExpiresAt = new Date(Date.now() + WORKER_LEASE_TTL_MS).toISOString();
     const capabilitiesJson = JSON.stringify(workerInput.capabilities || ['text', 'code']);
+    const loadedModelsJson = JSON.stringify(workerInput.loaded_models || []);
+    const gpuDevicesJson = JSON.stringify(workerInput.gpu_devices || []);
 
-    await this.db
-      .prepare(`
-        INSERT INTO compute_workers (
-          id, name, provider, gpu_model, gpu_count, vram_mb, system_ram_mb,
-          status, api_key_hash, key_prefix, key_fingerprint, is_revoked, capabilities,
-          contributor_name, contributor_email,
-          last_heartbeat, lease_expires_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .bind(
-        workerInput.id,
-        workerInput.name,
-        workerInput.provider,
-        workerInput.gpu_model,
-        workerInput.gpu_count,
-        workerInput.vram_mb,
-        workerInput.system_ram_mb,
-        workerInput.status || 'online',
-        keyData.storedHash,
-        keyData.keyPrefix,
-        keyData.keyFingerprint,
-        capabilitiesJson,
-        workerInput.contributor_name || 'Anonymous Contributor',
-        workerInput.contributor_email || null,
-        now,
-        leaseExpiresAt,
-        now,
-        now
-      )
-      .run();
+    try {
+      await this.db
+        .prepare(`
+          INSERT INTO compute_workers (
+            id, name, provider, gpu_model, gpu_count, vram_mb, system_ram_mb,
+            status, api_key_hash, key_prefix, key_fingerprint, is_revoked, capabilities,
+            loaded_models, gpu_devices_json,
+            contributor_name, contributor_email,
+            last_heartbeat, lease_expires_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          workerInput.id,
+          workerInput.name,
+          workerInput.provider,
+          workerInput.gpu_model,
+          workerInput.gpu_count,
+          workerInput.vram_mb,
+          workerInput.system_ram_mb,
+          workerInput.status || 'online',
+          keyData.storedHash,
+          keyData.keyPrefix,
+          keyData.keyFingerprint,
+          capabilitiesJson,
+          loadedModelsJson,
+          gpuDevicesJson,
+          workerInput.contributor_name || 'Anonymous Contributor',
+          workerInput.contributor_email || null,
+          now,
+          leaseExpiresAt,
+          now,
+          now
+        )
+        .run();
+    } catch {
+      await this.db
+        .prepare(`
+          INSERT INTO compute_workers (
+            id, name, provider, gpu_model, gpu_count, vram_mb, system_ram_mb,
+            status, api_key_hash, key_prefix, key_fingerprint, is_revoked, capabilities,
+            contributor_name, contributor_email,
+            last_heartbeat, lease_expires_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .bind(
+          workerInput.id,
+          workerInput.name,
+          workerInput.provider,
+          workerInput.gpu_model,
+          workerInput.gpu_count,
+          workerInput.vram_mb,
+          workerInput.system_ram_mb,
+          workerInput.status || 'online',
+          keyData.storedHash,
+          keyData.keyPrefix,
+          keyData.keyFingerprint,
+          capabilitiesJson,
+          workerInput.contributor_name || 'Anonymous Contributor',
+          workerInput.contributor_email || null,
+          now,
+          leaseExpiresAt,
+          now,
+          now
+        )
+        .run();
+    }
 
     const sanitized = await this.getComputeWorkerById(workerInput.id);
     if (!sanitized) {
@@ -858,7 +1129,6 @@ export class D1DatabaseService {
     }
 
     if (!row || !row.api_key_hash) {
-      // Constant-time dummy check to prevent timing side channels on unknown keys
       await verifyApiKeyHash(
         rawKey,
         'sha256$00000000000000000000000000000000$0000000000000000000000000000000000000000000000000000000000000000',
@@ -936,11 +1206,16 @@ export class D1DatabaseService {
         ? Math.max(0, Math.floor(Number(payload.uptime_seconds)))
         : 15;
 
+    const updatedCapabilities = Array.isArray(payload.capabilities)
+      ? JSON.stringify(payload.capabilities)
+      : JSON.stringify(existing.capabilities || ['text', 'code']);
+
     await this.db
       .prepare(`
         UPDATE compute_workers
         SET 
           status = ?,
+          capabilities = ?,
           last_heartbeat = ?,
           lease_expires_at = ?,
           shutdown_at = CASE WHEN ? = 'offline' THEN ? ELSE NULL END,
@@ -950,6 +1225,7 @@ export class D1DatabaseService {
       `)
       .bind(
         nextStatus,
+        updatedCapabilities,
         now,
         nextStatus === 'offline' ? null : leaseExpiresAt,
         nextStatus,
@@ -960,6 +1236,26 @@ export class D1DatabaseService {
       )
       .run();
 
+    if (Array.isArray(payload.loaded_models) || Array.isArray(payload.gpu_devices)) {
+      try {
+        await this.db
+          .prepare(`
+            UPDATE compute_workers
+            SET loaded_models = COALESCE(?, loaded_models),
+                gpu_devices_json = COALESCE(?, gpu_devices_json)
+            WHERE id = ?
+          `)
+          .bind(
+            Array.isArray(payload.loaded_models) ? JSON.stringify(payload.loaded_models) : null,
+            Array.isArray(payload.gpu_devices) ? JSON.stringify(payload.gpu_devices) : null,
+            workerId
+          )
+          .run();
+      } catch {
+        // Pre-0005 fallback
+      }
+    }
+
     // Refresh execution lease on any active task owned by this worker
     if (existing.current_task_id && nextStatus !== 'offline') {
       await this.db
@@ -968,7 +1264,7 @@ export class D1DatabaseService {
           SET lease_expires_at = ?, updated_at = ?
           WHERE id = ?
             AND claimed_by_worker = ?
-            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
         `)
         .bind(leaseExpiresAt, now, existing.current_task_id, workerId)
         .run();
@@ -1024,7 +1320,7 @@ export class D1DatabaseService {
               updated_at = ?
           WHERE id = ?
             AND claimed_by_worker = ?
-            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
         `)
         .bind(now, existing.current_task_id, workerId)
         .run();
@@ -1038,11 +1334,11 @@ export class D1DatabaseService {
       .prepare(`
         UPDATE compute_workers
         SET status = 'offline',
-            current_task_id = NULL,
-            lease_expires_at = NULL,
-            shutdown_at = ?,
-            uptime_seconds = COALESCE(uptime_seconds, 0) + ?,
-            updated_at = ?
+             current_task_id = NULL,
+             lease_expires_at = NULL,
+             shutdown_at = ?,
+             uptime_seconds = COALESCE(uptime_seconds, 0) + ?,
+             updated_at = ?
         WHERE id = ?
       `)
       .bind(
@@ -1079,7 +1375,7 @@ export class D1DatabaseService {
               updated_at = ?
           WHERE id = ?
             AND claimed_by_worker = ?
-            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
         `)
         .bind(now, existing.current_task_id, workerId)
         .run();
@@ -1104,8 +1400,8 @@ export class D1DatabaseService {
   }
 
   /**
-   * Atomic task claiming for authenticated distributed worker.
-   * Enforces worker readiness, VRAM constraints, and atomic single-worker assignment with lease TTL.
+   * Capability-aware atomic task claiming for authenticated distributed worker.
+   * Enforces worker readiness, GPU count, VRAM, System RAM, model compatibility, and capability matching.
    */
   async claimTaskForWorker(workerId: string): Promise<ClaimTaskOutcome> {
     await this.reapExpiredLeases();
@@ -1148,7 +1444,7 @@ export class D1DatabaseService {
         SELECT t.*, a.name as agent_name 
         FROM tasks t
         LEFT JOIN agents a ON t.agent_id = a.id
-        WHERE t.status IN ('pending', 'queued')
+        WHERE t.status IN ('pending', 'queued', 'scheduled', 'retrying')
           AND (t.claimed_by_worker IS NULL OR t.claimed_by_worker = '')
         ORDER BY 
           CASE t.priority
@@ -1158,13 +1454,24 @@ export class D1DatabaseService {
             ELSE 4
           END ASC,
           t.created_at ASC
-        LIMIT 10
+        LIMIT 15
       `)
       .all<any>();
 
     if (!candidates || candidates.length === 0) {
       return { status: 200, task: null };
     }
+
+    const models = await this.getModels().catch(() => [] as ModelDefinition[]);
+    const modelMap = new Map<string, ModelDefinition>();
+    for (const m of models) modelMap.set(m.id, m);
+
+    const workerCaps = new Set(
+      (worker.capabilities || ['text', 'code']).map((c) => String(c).toLowerCase())
+    );
+    const workerLoadedModels = new Set(
+      (worker.loaded_models || []).map((m) => String(m).toLowerCase())
+    );
 
     for (const candidate of candidates) {
       let inputPayload: Record<string, any> = {};
@@ -1174,12 +1481,76 @@ export class D1DatabaseService {
         inputPayload = {};
       }
 
+      // 1. Check GPU requirement
       if (inputPayload.require_gpu === true && worker.gpu_count <= 0) {
         continue;
       }
-      const minVram = Number(inputPayload.min_vram_mb || 0);
-      if (Number.isFinite(minVram) && minVram > 0 && worker.vram_mb < minVram) {
+
+      // 2. Check minimum GPU count if specified
+      const minGpus = Number(inputPayload.min_gpu_count || 0);
+      if (Number.isFinite(minGpus) && minGpus > 0 && worker.gpu_count < minGpus) {
         continue;
+      }
+
+      // 3. Check model registry requirements if a model is specified
+      const requestedModelId =
+        typeof inputPayload.model === 'string' ? inputPayload.model.trim() : '';
+      const modelDef = requestedModelId ? modelMap.get(requestedModelId) : undefined;
+
+      let requiredVramMb = Number(inputPayload.min_vram_mb || 0);
+      if (requiredVramMb <= 0 && modelDef) {
+        // Account for int4 quantization on 14B models running on 16GB/30GB T4s
+        const supportsInt4 =
+          Array.isArray(modelDef.supported_precisions) &&
+          modelDef.supported_precisions.includes('int4');
+        requiredVramMb =
+          supportsInt4 && inputPayload.precision !== 'fp16'
+            ? Math.min(modelDef.min_vram_mb, 10240)
+            : modelDef.min_vram_mb;
+      }
+      if (Number.isFinite(requiredVramMb) && requiredVramMb > 0 && worker.vram_mb < requiredVramMb) {
+        continue;
+      }
+
+      // 4. Check System RAM requirement
+      const requiredRamMb = Number(
+        inputPayload.min_system_ram_mb || modelDef?.min_system_ram_mb || 0
+      );
+      if (
+        Number.isFinite(requiredRamMb) &&
+        requiredRamMb > 0 &&
+        worker.system_ram_mb > 0 &&
+        worker.system_ram_mb < requiredRamMb
+      ) {
+        continue;
+      }
+
+      // 5. Check explicit required_capability / required_capabilities against worker capabilities
+      const explicitRequiredCaps: string[] = [];
+      if (typeof inputPayload.required_capability === 'string' && inputPayload.required_capability.trim()) {
+        explicitRequiredCaps.push(inputPayload.required_capability.trim().toLowerCase());
+      }
+      if (Array.isArray(inputPayload.required_capabilities)) {
+        for (const rc of inputPayload.required_capabilities) {
+          if (typeof rc === 'string' && rc.trim()) {
+            explicitRequiredCaps.push(rc.trim().toLowerCase());
+          }
+        }
+      }
+
+      if (explicitRequiredCaps.length > 0 && !workerCaps.has('all') && !workerCaps.has('*')) {
+        const hasAll = explicitRequiredCaps.every(
+          (rc) =>
+            workerCaps.has(rc) ||
+            (rc === 'coding' && workerCaps.has('code')) ||
+            (rc === 'code' && workerCaps.has('coding')) ||
+            (rc === 'speech' && workerCaps.has('audio')) ||
+            (rc === 'audio' && workerCaps.has('speech')) ||
+            (requestedModelId && workerLoadedModels.has(requestedModelId.toLowerCase()))
+        );
+        if (!hasAll) {
+          continue;
+        }
       }
 
       const now = new Date().toISOString();
@@ -1195,14 +1566,13 @@ export class D1DatabaseService {
               attempt_count = COALESCE(attempt_count, 0) + 1,
               updated_at = ?
           WHERE id = ?
-            AND status IN ('pending', 'queued')
+            AND status IN ('pending', 'queued', 'scheduled', 'retrying')
             AND (claimed_by_worker IS NULL OR claimed_by_worker = '')
         `)
         .bind(workerId, now, leaseExpiresAt, now, candidate.id)
         .run();
 
       if (updateResult.meta && updateResult.meta.changes === 0) {
-        // Another worker claimed this task concurrently; try next candidate
         continue;
       }
 
@@ -1329,7 +1699,7 @@ export class D1DatabaseService {
           SET ${updates.join(', ')}
           WHERE id = ?
             AND claimed_by_worker = ?
-            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+            AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
         `,
         values,
       };
@@ -1351,7 +1721,6 @@ export class D1DatabaseService {
         statusResolution.taskLifecycleStatus &&
         statusResolution.taskLifecycleStatus !== 'running'
       ) {
-        // Fallback when running against a pre-0003 tasks table whose CHECK constraint only allows 'running'
         const fallbackUpdate = buildTaskUpdateQuery('running');
         appliedTaskStatus = 'running';
         updateRes = await this.db
@@ -1385,6 +1754,14 @@ export class D1DatabaseService {
     workerId: string,
     resultPayload: Record<string, unknown>
   ): Promise<TaskMutationOutcome> {
+    if (!resultPayload || typeof resultPayload !== 'object' || Array.isArray(resultPayload) || Object.keys(resultPayload).length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        error: 'Task cannot be marked completed without a valid, non-empty result_payload object',
+      };
+    }
+
     const ownership = await this.verifyWorkerTaskOwnership(taskId, workerId);
     if (!ownership.ok) {
       return { ok: false, status: ownership.status, error: ownership.error };
@@ -1404,7 +1781,7 @@ export class D1DatabaseService {
             updated_at = ?
         WHERE id = ?
           AND claimed_by_worker = ?
-          AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+          AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
       `)
       .bind(JSON.stringify(resultPayload), now, now, taskId, workerId)
       .run();
@@ -1436,29 +1813,43 @@ export class D1DatabaseService {
   async failTaskFromWorker(
     taskId: string,
     workerId: string,
-    errorMessage: string
+    errorMessage: string,
+    retryable = false
   ): Promise<TaskMutationOutcome> {
     const ownership = await this.verifyWorkerTaskOwnership(taskId, workerId);
-    if (!ownership.ok) {
+    if (!ownership.ok || !ownership.task) {
       return { ok: false, status: ownership.status, error: ownership.error };
     }
 
     const now = new Date().toISOString();
     const leaseExpiresAt = new Date(Date.now() + WORKER_LEASE_TTL_MS).toISOString();
+    const attempts = Number(ownership.task.attempt_count || 1);
+    const maxRetries = Number(ownership.task.max_retries ?? 2);
+    const shouldRequeue = retryable && attempts < maxRetries;
 
     const updateRes = await this.db
       .prepare(`
         UPDATE tasks 
-        SET status = 'failed',
+        SET status = ?,
+            claimed_by_worker = CASE WHEN ? = 'queued' THEN NULL ELSE claimed_by_worker END,
             error_message = ?,
             lease_expires_at = NULL,
-            completed_at = ?,
+            completed_at = CASE WHEN ? = 'failed' THEN ? ELSE NULL END,
             updated_at = ?
         WHERE id = ?
           AND claimed_by_worker = ?
-          AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading')
+          AND status IN ('assigned', 'downloading', 'loading_model', 'running', 'uploading', 'processing_result')
       `)
-      .bind(errorMessage, now, now, taskId, workerId)
+      .bind(
+        shouldRequeue ? 'queued' : 'failed',
+        shouldRequeue ? 'queued' : 'failed',
+        errorMessage,
+        shouldRequeue ? 'queued' : 'failed',
+        now,
+        now,
+        taskId,
+        workerId
+      )
       .run();
 
     if (updateRes.meta && updateRes.meta.changes === 0) {
@@ -1481,7 +1872,7 @@ export class D1DatabaseService {
       .bind(leaseExpiresAt, now, workerId)
       .run();
 
-    return { ok: true, status: 200 };
+    return { ok: true, status: 200, taskStatus: shouldRequeue ? 'queued' : 'failed' };
   }
 
   // --- MODEL REGISTRY ---
@@ -1498,7 +1889,9 @@ export class D1DatabaseService {
     const { results } = await this.db.prepare(query).bind(...params).all<any>();
     return (results || []).map((row: any) => ({
       ...row,
+      min_system_ram_mb: Number(row.min_system_ram_mb ?? 8192),
       supported_precisions: JSON.parse(row.supported_precisions || '["fp16"]'),
+      capabilities: row.capabilities ? JSON.parse(row.capabilities) : [row.category],
       execution_constraints: JSON.parse(row.execution_constraints || '{}'),
       is_enabled: Boolean(row.is_enabled),
     }));
@@ -1506,39 +1899,47 @@ export class D1DatabaseService {
 
   // --- USER ACCOUNTS & WORKSPACES ---
 
+  private normalizeUserRow(row: any): UserAccount {
+    const status = (row.status || 'active') as 'pending_verification' | 'active' | 'suspended';
+    return {
+      id: row.id,
+      email: row.email,
+      name: row.name,
+      role: row.role || 'member',
+      status,
+      is_active: status === 'active',
+      email_verified: status === 'active',
+      avatar_url: row.avatar_url || undefined,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    };
+  }
+
   async getUserByEmail(email: string): Promise<UserAccount | null> {
     const normalized = email.trim().toLowerCase();
     const row = await this.db
       .prepare('SELECT * FROM users_v4 WHERE email = ?')
       .bind(normalized)
-      .first<any>();
+      .first<any>()
+      .catch(() => null);
     if (!row) {
-      // Fallback check in users if migration pending
       const legacyRow = await this.db
         .prepare('SELECT * FROM users WHERE email = ?')
         .bind(normalized)
         .first<any>()
         .catch(() => null);
       if (!legacyRow) return null;
-      return {
-        id: legacyRow.id,
-        email: legacyRow.email,
-        name: legacyRow.name,
-        role: legacyRow.role || 'member',
-        status: 'active',
-        avatar_url: legacyRow.avatar_url,
-        created_at: legacyRow.created_at,
-        updated_at: legacyRow.updated_at,
-      };
+      return this.normalizeUserRow(legacyRow);
     }
-    return row as UserAccount;
+    return this.normalizeUserRow(row);
   }
 
   async getUserById(id: string): Promise<UserAccount | null> {
     const row = await this.db
       .prepare('SELECT * FROM users_v4 WHERE id = ?')
       .bind(id)
-      .first<any>();
+      .first<any>()
+      .catch(() => null);
     if (!row) {
       const legacyRow = await this.db
         .prepare('SELECT * FROM users WHERE id = ?')
@@ -1546,18 +1947,9 @@ export class D1DatabaseService {
         .first<any>()
         .catch(() => null);
       if (!legacyRow) return null;
-      return {
-        id: legacyRow.id,
-        email: legacyRow.email,
-        name: legacyRow.name,
-        role: legacyRow.role || 'member',
-        status: 'active',
-        avatar_url: legacyRow.avatar_url,
-        created_at: legacyRow.created_at,
-        updated_at: legacyRow.updated_at,
-      };
+      return this.normalizeUserRow(legacyRow);
     }
-    return row as UserAccount;
+    return this.normalizeUserRow(row);
   }
 
   async createUser(user: {
@@ -1580,16 +1972,17 @@ export class D1DatabaseService {
       `)
       .bind(user.id, normalizedEmail, user.name, role, status, user.avatar_url || null, now, now)
       .run()
-      .catch(async () => {
-        // Compatibility write to legacy users table
-        await this.db
-          .prepare(`
-            INSERT INTO users (id, email, name, role, avatar_url, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-          `)
-          .bind(user.id, normalizedEmail, user.name, role, user.avatar_url || null, now, now)
-          .run();
-      });
+      .catch(() => {});
+
+    // Keep legacy `users` table synchronized so foreign keys on tasks/files/conversations always match
+    await this.db
+      .prepare(`
+        INSERT OR IGNORE INTO users (id, email, name, role, avatar_url, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `)
+      .bind(user.id, normalizedEmail, user.name, role, user.avatar_url || null, now, now)
+      .run()
+      .catch(() => {});
 
     return {
       id: user.id,
@@ -1597,10 +1990,22 @@ export class D1DatabaseService {
       name: user.name,
       role,
       status,
+      is_active: status === 'active',
+      email_verified: status === 'active',
       avatar_url: user.avatar_url,
       created_at: now,
       updated_at: now,
     };
+  }
+
+  async activateUserAccount(userId: string): Promise<UserAccount | null> {
+    const now = new Date().toISOString();
+    await this.db
+      .prepare("UPDATE users_v4 SET status = 'active', updated_at = ? WHERE id = ?")
+      .bind(now, userId)
+      .run()
+      .catch(() => {});
+    return this.getUserById(userId);
   }
 
   async createOrganization(org: Organization): Promise<Organization> {
@@ -1614,7 +2019,10 @@ export class D1DatabaseService {
       .run();
 
     await this.addOrganizationMember(org.id, org.owner_id, 'owner');
-    return org;
+    return {
+      ...org,
+      owner_user_id: org.owner_id,
+    };
   }
 
   async getOrganizationById(id: string): Promise<Organization | null> {
@@ -1625,6 +2033,7 @@ export class D1DatabaseService {
     if (!row) return null;
     return {
       ...row,
+      owner_user_id: row.owner_id,
       is_personal: Boolean(row.is_personal),
     };
   }
@@ -1641,6 +2050,7 @@ export class D1DatabaseService {
       .all<any>();
     return (res.results || []).map((r: any) => ({
       ...r,
+      owner_user_id: r.owner_id,
       is_personal: Boolean(r.is_personal),
     }));
   }
@@ -1713,7 +2123,7 @@ export class D1DatabaseService {
       .prepare('DELETE FROM passkey_credentials WHERE id = ? AND user_id = ?')
       .bind(id, userId)
       .run();
-    return Boolean(res.meta && res.meta.changes > 0);
+    return Boolean(res.meta && Number(res.meta.changes || 0) > 0);
   }
 
   async updatePasskeyUsage(id: string, signCount: number): Promise<void> {
@@ -1890,6 +2300,22 @@ export class D1DatabaseService {
     return row as WorkerOwnership;
   }
 
+  async getAllWorkerOwnerships(): Promise<WorkerOwnership[]> {
+    try {
+      const res = await this.db
+        .prepare(`
+          SELECT wo.*, u.name as owner_name, o.name as organization_name
+          FROM worker_ownership wo
+          LEFT JOIN users_v4 u ON wo.owner_user_id = u.id
+          LEFT JOIN organizations o ON wo.organization_id = o.id
+        `)
+        .all<any>();
+      return (res.results || []) as WorkerOwnership[];
+    } catch {
+      return [];
+    }
+  }
+
   async setWorkerOwnership(ownership: WorkerOwnership): Promise<void> {
     const now = new Date().toISOString();
     await this.db
@@ -1906,7 +2332,6 @@ export class D1DatabaseService {
       )
       .run();
 
-    // Also update compute_workers contributor field to owner's name
     const user = await this.getUserById(ownership.owner_user_id);
     if (user) {
       await this.db
@@ -2078,5 +2503,19 @@ export class D1DatabaseService {
       .run()
       .catch(() => {});
   }
-}
 
+  async getSecurityEvents(limit = 50): Promise<SecurityAuditEvent[]> {
+    try {
+      const res = await this.db
+        .prepare('SELECT * FROM security_audit_events ORDER BY created_at DESC LIMIT ?')
+        .bind(limit)
+        .all<any>();
+      return (res.results || []).map((r: any) => ({
+        ...r,
+        details: typeof r.details === 'string' ? JSON.parse(r.details || '{}') : r.details || {},
+      }));
+    } catch {
+      return [];
+    }
+  }
+}

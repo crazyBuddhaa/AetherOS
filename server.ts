@@ -29,8 +29,12 @@ import {
   generateTotpCode,
   verifyTotpCode,
   verifyWebAuthnChallenge,
+  verifyWebAuthnRegistrationCredential,
+  parseAndVerifyAuthenticatorData,
   verifyWebAuthnAssertionSignature,
+  SECURITY_RESPONSE_HEADERS,
 } from './worker/auth.ts';
+import { runDefensiveSecurityAssessment } from './worker/cybersecurity.ts';
 import type {
   ActivityLog,
   Agent,
@@ -55,12 +59,14 @@ import type {
   WorkerOwnership,
   KaggleCredentials,
   SecurityAuditEvent,
+  R2FileRecord,
 } from './worker/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 interface StoredFileObject {
   key: string;
@@ -75,7 +81,93 @@ interface StoredFileObject {
 }
 
 function createInitialAgents(): Agent[] {
-  return [];
+  const now = new Date().toISOString();
+  return [
+    {
+      id: 'agent_dataops',
+      name: 'Nexus-7 (Code & DataOps Architect)',
+      description: 'Synthesizes full-stack TypeScript, Cloudflare Workers, D1 SQL migrations, and PyTorch GPU modules.',
+      model: 'qwen-2.5-coder-14b',
+      system_instructions: 'You are Nexus-7, a senior distributed systems and AI infrastructure architect.',
+      temperature: 0.2,
+      max_tokens: 4096,
+      permitted_tools: ['d1_sql_query', 'r2_file_manager', 'code_interpreter'],
+      is_enabled: true,
+      avatar_color: '#2563EB',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_cybersec',
+      name: 'Aegis-0 (Cybersecurity Defensive Specialist)',
+      description: 'Authorized defensive security operations: HTTP header & TLS auditing, DNS SPF/DMARC/CAA verification, dependency CVE checks, and source code static security analysis.',
+      model: 'cybersec-defensive-analyzer-v1',
+      system_instructions: 'You are Aegis-0, AetherOS Principal Defensive Cybersecurity Specialist. Perform strictly authorized defensive security assessments, distinguishing verified findings from unverified indicators.',
+      temperature: 0.1,
+      max_tokens: 4096,
+      permitted_tools: ['http_security_header_audit', 'tls_config_inspector', 'dns_spf_dmarc_checker', 'dependency_vuln_scanner', 'static_code_security_analyzer', 'r2_report_archiver'],
+      is_enabled: true,
+      avatar_color: '#DC2626',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_visual_synth',
+      name: 'Lumina-4 (Diffusion Visual Synthesizer)',
+      description: 'High-resolution diffusion image generation (SDXL Lightning / SD 1.5), Real-ESRGAN 4x upscaling, and BiRefNet alpha foreground extraction.',
+      model: 'sdxl-lightning',
+      system_instructions: 'You are Lumina-4, a diffusion synthesis and spatial super-resolution specialist.',
+      temperature: 0.4,
+      max_tokens: 2048,
+      permitted_tools: ['sdxl_generate', 'esrgan_upscale', 'birefnet_alpha', 'r2_artifact_upload'],
+      is_enabled: true,
+      avatar_color: '#7C3AED',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_motion_studio',
+      name: 'Kinetix-3 (Temporal Motion & Video Engine)',
+      description: 'Temporal motion synthesis using AnimateDiff v3 across dual Tesla T4 GPUs.',
+      model: 'animatediff-motion-v3',
+      system_instructions: 'You are Kinetix-3, a temporal diffusion video synthesis specialist.',
+      temperature: 0.4,
+      max_tokens: 2048,
+      permitted_tools: ['animatediff_render', 'r2_artifact_upload'],
+      is_enabled: true,
+      avatar_color: '#0891B2',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_storyboard',
+      name: 'Vanguard-S (Cinematic Storyboard Director)',
+      description: 'Translates narrative beats into structured shot lists, camera blocking metadata, and visual plates.',
+      model: 'sdxl-lightning',
+      system_instructions: 'You are Vanguard-S, a cinematic storyboard director and shot planner.',
+      temperature: 0.5,
+      max_tokens: 4096,
+      permitted_tools: ['shot_compositor', 'sdxl_generate', 'r2_artifact_upload'],
+      is_enabled: true,
+      avatar_color: '#D97706',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_screenwriter',
+      name: 'Orpheus-9 (Screenplay & Narrative Architect)',
+      description: 'Drafts industry-standard Fountain screenplays, scene breakdowns, and dialogue pacing.',
+      model: 'deepseek-r1-distill-qwen-14b',
+      system_instructions: 'You are Orpheus-9, an industry screenplay and narrative structure architect.',
+      temperature: 0.6,
+      max_tokens: 8192,
+      permitted_tools: ['fountain_formatter', 'r2_artifact_upload'],
+      is_enabled: true,
+      avatar_color: '#059669',
+      created_at: now,
+      updated_at: now,
+    },
+  ];
 }
 
 function createInitialTasks(): Task[] {
@@ -111,11 +203,16 @@ function createInitialModels(): ModelDefinition[] {
     {
       id: 'qwen-2.5-coder-14b',
       name: 'Qwen 2.5 Coder 14B',
-      category: 'text',
+      category: 'coding',
       min_vram_mb: 14336,
+      min_system_ram_mb: 16384,
       supported_precisions: ['fp16', 'int4', 'awq'],
+      capabilities: ['text', 'code', 'coding', 'json'],
       weights_source: 'Qwen/Qwen2.5-Coder-14B-Instruct',
       description: 'Premier open coding & reasoning model. Optimized for tensor-parallel on dual T4.',
+      parameter_count: '14.7B',
+      context_window: 32768,
+      default_timeout_seconds: 180,
       is_enabled: true,
       created_at: now,
     },
@@ -124,9 +221,30 @@ function createInitialModels(): ModelDefinition[] {
       name: 'DeepSeek R1 Distill 14B',
       category: 'text',
       min_vram_mb: 15360,
+      min_system_ram_mb: 16384,
       supported_precisions: ['fp16', 'int4', 'gptq'],
+      capabilities: ['text', 'reasoning', 'screenplay', 'analysis'],
       weights_source: 'deepseek-ai/DeepSeek-R1-Distill-Qwen-14B',
       description: 'High-throughput reasoning model with deep chain-of-thought distillation.',
+      parameter_count: '14.8B',
+      context_window: 32768,
+      default_timeout_seconds: 240,
+      is_enabled: true,
+      created_at: now,
+    },
+    {
+      id: 'qwen-2-vl-7b-instruct',
+      name: 'Qwen2-VL 7B Vision-Language',
+      category: 'vision',
+      min_vram_mb: 10240,
+      min_system_ram_mb: 12288,
+      supported_precisions: ['fp16', 'int4'],
+      capabilities: ['vision', 'multimodal', 'ocr', 'image_understanding'],
+      weights_source: 'Qwen/Qwen2-VL-7B-Instruct',
+      description: 'Multimodal vision-language model for image inspection, OCR, and visual reasoning.',
+      parameter_count: '7.6B',
+      context_window: 32768,
+      default_timeout_seconds: 180,
       is_enabled: true,
       created_at: now,
     },
@@ -135,9 +253,14 @@ function createInitialModels(): ModelDefinition[] {
       name: 'Stable Diffusion 1.5',
       category: 'image',
       min_vram_mb: 6144,
+      min_system_ram_mb: 8192,
       supported_precisions: ['fp16'],
+      capabilities: ['image', 'text_to_image', 'storyboard_plate'],
       weights_source: 'runwayml/stable-diffusion-v1-5',
       description: 'Fast text-to-image synthesis (~2.5s generation per step on T4).',
+      parameter_count: '0.98B',
+      context_window: 77,
+      default_timeout_seconds: 120,
       is_enabled: true,
       created_at: now,
     },
@@ -146,9 +269,14 @@ function createInitialModels(): ModelDefinition[] {
       name: 'SDXL Lightning 4-Step',
       category: 'image',
       min_vram_mb: 10240,
+      min_system_ram_mb: 16384,
       supported_precisions: ['fp16'],
+      capabilities: ['image', 'text_to_image', 'high_res_image', 'storyboard_plate'],
       weights_source: 'ByteDance/SDXL-Lightning',
       description: 'Photorealistic high-resolution 1024x1024 generation in 4 inference steps.',
+      parameter_count: '3.5B',
+      context_window: 77,
+      default_timeout_seconds: 180,
       is_enabled: true,
       created_at: now,
     },
@@ -157,9 +285,14 @@ function createInitialModels(): ModelDefinition[] {
       name: 'Real-ESRGAN 4x+ Upscaler',
       category: 'image_processing',
       min_vram_mb: 4096,
+      min_system_ram_mb: 8192,
       supported_precisions: ['fp16'],
+      capabilities: ['image_processing', 'upscale', 'super_resolution'],
       weights_source: 'xinntao/Real-ESRGAN',
       description: 'High-fidelity spatial super-resolution upscaler.',
+      parameter_count: '16.7M',
+      context_window: 0,
+      default_timeout_seconds: 90,
       is_enabled: true,
       created_at: now,
     },
@@ -168,9 +301,14 @@ function createInitialModels(): ModelDefinition[] {
       name: 'BiRefNet Background Removal',
       category: 'image_processing',
       min_vram_mb: 4096,
+      min_system_ram_mb: 8192,
       supported_precisions: ['fp16'],
+      capabilities: ['image_processing', 'background_removal', 'segmentation'],
       weights_source: 'ZhengPeng7/BiRefNet',
       description: 'Ultra-clean background extraction for multimodal agent workflows.',
+      parameter_count: '215M',
+      context_window: 0,
+      default_timeout_seconds: 90,
       is_enabled: true,
       created_at: now,
     },
@@ -179,20 +317,62 @@ function createInitialModels(): ModelDefinition[] {
       name: 'AnimateDiff Motion Module v3',
       category: 'video',
       min_vram_mb: 12288,
+      min_system_ram_mb: 16384,
       supported_precisions: ['fp16'],
+      capabilities: ['video', 'text_to_video', 'motion_synthesis'],
       weights_source: 'guoyww/animatediff-motion-adapter-v1-5-3',
       description: 'Short video synthesis from text prompt (16-32 frames at 512x512).',
+      parameter_count: '1.8B',
+      context_window: 77,
+      default_timeout_seconds: 300,
       is_enabled: true,
       created_at: now,
     },
     {
       id: 'whisper-large-v3-turbo',
       name: 'Whisper Large v3 Turbo',
-      category: 'audio',
+      category: 'speech',
       min_vram_mb: 4096,
+      min_system_ram_mb: 8192,
       supported_precisions: ['fp16'],
+      capabilities: ['audio', 'speech', 'transcription', 'speech_to_text'],
       weights_source: 'openai/whisper-large-v3-turbo',
       description: 'Fast multilingual speech-to-text transcription engine.',
+      parameter_count: '809M',
+      context_window: 448,
+      default_timeout_seconds: 120,
+      is_enabled: true,
+      created_at: now,
+    },
+    {
+      id: 'bge-large-en-v1.5',
+      name: 'BAAI BGE Large EN v1.5',
+      category: 'embedding',
+      min_vram_mb: 2048,
+      min_system_ram_mb: 4096,
+      supported_precisions: ['fp16', 'fp32'],
+      capabilities: ['embedding', 'semantic_search', 'vector_indexing'],
+      weights_source: 'BAAI/bge-large-en-v1.5',
+      description: 'High-dimensional 1024-d dense vector embedding model for semantic retrieval and RAG.',
+      parameter_count: '335M',
+      context_window: 512,
+      default_timeout_seconds: 60,
+      is_enabled: true,
+      created_at: now,
+    },
+    {
+      id: 'cybersec-defensive-analyzer-v1',
+      name: 'AetherOS Defensive Security Analyzer v1',
+      category: 'specialized',
+      min_vram_mb: 0,
+      min_system_ram_mb: 512,
+      supported_precisions: ['fp32'],
+      capabilities: ['security_audit', 'header_analysis', 'tls_inspection', 'dns_security', 'dependency_audit', 'static_code_analysis'],
+      weights_source: 'aetheros/cybersec-defensive-analyzer-v1',
+      description: 'Specialized defensive cybersecurity assessment engine for HTTP headers, TLS, DNS SPF/DMARC, dependency CVE scanning, and static code analysis.',
+      parameter_count: 'Rule+AST',
+      context_window: 65536,
+      default_timeout_seconds: 60,
       is_enabled: true,
       created_at: now,
     },
@@ -211,17 +391,26 @@ function sanitizePublicWorker(worker: ComputeWorker): ComputeWorker {
   return clean as unknown as ComputeWorker;
 }
 
-export async function createAetherApp(options: { disableVite?: boolean } = {}) {
+export async function createAetherApp(options: { disableVite?: boolean; persistPath?: string } = {}) {
   const app = express();
+
+  const persistFile =
+    options.persistPath !== undefined
+      ? options.persistPath
+      : options.disableVite
+      ? null
+      : path.resolve(__dirname, '.data', 'aetheros-dev-state.json');
 
   let agents: Agent[] = createInitialAgents();
   let tasks: Task[] = createInitialTasks();
   let approvals: ApprovalRequest[] = createInitialApprovals();
   let filesMap: Map<string, StoredFileObject> = createInitialFiles();
+  let fileMetadataList: R2FileRecord[] = [];
   let initialWorkerState = createInitialWorkers();
   let workers: ComputeWorker[] = initialWorkerState.workers;
   let workerAuthMap: Map<string, WorkerInternalAuth> = initialWorkerState.authMap;
   const workerNonceMap = new Map<string, number>();
+  const rateLimitMap = new Map<string, { count: number; windowStartMs: number }>();
   const models: ModelDefinition[] = createInitialModels();
   let logs: ActivityLog[] = createInitialLogs();
   let conversations: Conversation[] = [];
@@ -238,6 +427,111 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
   let kaggleCredentialsList: KaggleCredentials[] = [];
   let securityEvents: SecurityAuditEvent[] = [];
 
+  function loadPersistedState() {
+    if (!persistFile || !fs.existsSync(persistFile)) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(persistFile, 'utf-8'));
+      if (Array.isArray(raw.agents) && raw.agents.length > 0) agents = raw.agents;
+      if (Array.isArray(raw.tasks)) tasks = raw.tasks;
+      if (Array.isArray(raw.approvals)) approvals = raw.approvals;
+      if (Array.isArray(raw.workers)) workers = raw.workers;
+      if (Array.isArray(raw.workerAuthEntries)) {
+        workerAuthMap = new Map(raw.workerAuthEntries);
+      }
+      if (Array.isArray(raw.logs)) logs = raw.logs;
+      if (Array.isArray(raw.conversations)) conversations = raw.conversations;
+      if (Array.isArray(raw.messages)) messages = raw.messages;
+      if (Array.isArray(raw.users)) users = raw.users;
+      if (Array.isArray(raw.organizations)) organizations = raw.organizations;
+      if (Array.isArray(raw.organizationMemberships)) organizationMemberships = raw.organizationMemberships;
+      if (Array.isArray(raw.passkeyCredentials)) passkeyCredentials = raw.passkeyCredentials;
+      if (Array.isArray(raw.totpCredentials)) totpCredentials = raw.totpCredentials;
+      if (Array.isArray(raw.authChallenges)) authChallenges = raw.authChallenges;
+      if (Array.isArray(raw.authSessions)) authSessions = raw.authSessions;
+      if (Array.isArray(raw.computeSessions)) computeSessions = raw.computeSessions;
+      if (Array.isArray(raw.workerOwnerships)) workerOwnerships = raw.workerOwnerships;
+      if (Array.isArray(raw.kaggleCredentialsList)) kaggleCredentialsList = raw.kaggleCredentialsList;
+      if (Array.isArray(raw.securityEvents)) securityEvents = raw.securityEvents;
+      if (Array.isArray(raw.fileMetadataList)) fileMetadataList = raw.fileMetadataList;
+      if (Array.isArray(raw.filesEntries)) {
+        filesMap = new Map(
+          raw.filesEntries.map(([k, v]: [string, any]) => [
+            k,
+            { ...v, buffer: Buffer.from(v.bufferBase64 || '', 'base64') },
+          ])
+        );
+      }
+    } catch {}
+  }
+
+  function savePersistedState() {
+    if (!persistFile) return;
+    try {
+      const dir = path.dirname(persistFile);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      const serialized = {
+        agents,
+        tasks,
+        approvals,
+        workers,
+        workerAuthEntries: Array.from(workerAuthMap.entries()),
+        logs,
+        conversations,
+        messages,
+        users,
+        organizations,
+        organizationMemberships,
+        passkeyCredentials,
+        totpCredentials,
+        authChallenges,
+        authSessions,
+        computeSessions,
+        workerOwnerships,
+        kaggleCredentialsList,
+        securityEvents,
+        fileMetadataList,
+        filesEntries: Array.from(filesMap.entries()).map(([k, v]) => [
+          k,
+          {
+            key: v.key,
+            filename: v.filename,
+            contentType: v.contentType,
+            size: v.size,
+            etag: v.etag,
+            uploaded: v.uploaded,
+            storageClass: v.storageClass,
+            task_id: v.task_id,
+            bufferBase64: v.buffer.toString('base64'),
+          },
+        ]),
+      };
+      fs.writeFileSync(persistFile, JSON.stringify(serialized, null, 2), 'utf-8');
+    } catch {}
+  }
+
+  loadPersistedState();
+
+  function checkRateLimit(bucketKey: string, maxRequests = 25, windowMs = 60_000): {
+    allowed: boolean;
+    retryAfterSeconds: number;
+  } {
+    const nowMs = Date.now();
+    const existing = rateLimitMap.get(bucketKey);
+    if (!existing || nowMs - existing.windowStartMs > windowMs) {
+      rateLimitMap.set(bucketKey, { count: 1, windowStartMs: nowMs });
+      return { allowed: true, retryAfterSeconds: 0 };
+    }
+    const nextCount = existing.count + 1;
+    existing.count = nextCount;
+    if (nextCount > maxRequests) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((existing.windowStartMs + windowMs - nowMs) / 1000));
+      return { allowed: false, retryAfterSeconds };
+    }
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
   function addLog(entry: Omit<ActivityLog, 'id' | 'created_at'>) {
     logs.unshift({
       ...entry,
@@ -247,11 +541,25 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     if (logs.length > 100) {
       logs = logs.slice(0, 100);
     }
+    savePersistedState();
+  }
+
+  function addSecurityEvent(event: Omit<SecurityAuditEvent, 'id' | 'created_at'>) {
+    securityEvents.unshift({
+      ...event,
+      id: generateSecureId('sec'),
+      created_at: new Date().toISOString(),
+    });
+    if (securityEvents.length > 200) {
+      securityEvents = securityEvents.slice(0, 200);
+    }
+    savePersistedState();
   }
 
   function reapExpiredLeases() {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
+    let mutated = false;
 
     for (const task of tasks) {
       if (
@@ -264,6 +572,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         task.lease_expires_at = undefined;
         task.progress_percent = 0;
         task.updated_at = nowIso;
+        mutated = true;
       }
     }
 
@@ -278,8 +587,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         worker.current_task_title = undefined;
         worker.lease_expires_at = undefined;
         worker.updated_at = nowIso;
+        mutated = true;
       }
     }
+
+    if (mutated) savePersistedState();
   }
 
   async function authenticateWorkerRequest(
@@ -438,17 +750,21 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     task.lease_expires_at = undefined;
     task.progress_percent = 0;
     task.updated_at = nowIso;
+    savePersistedState();
     return task.id;
   }
 
-  // CORS middleware for /api/*
+  // CORS & Security Headers middleware for /api/*
   app.use('/api', (req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Origin', req.header('Origin') || '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader(
       'Access-Control-Allow-Headers',
       'Content-Type, Authorization, X-Requested-With, X-Worker-Id, X-Worker-Timestamp, X-Worker-Nonce, Idempotency-Key, X-Registration-Token'
     );
+    for (const [hdr, val] of Object.entries(SECURITY_RESPONSE_HEADERS)) {
+      res.setHeader(hdr, val);
+    }
     if (req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -456,7 +772,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     next();
   });
 
-  // Only invoke express.json() for non-multipart requests so multipart file uploads keep their raw stream
   const jsonParser = express.json({ limit: '25mb' });
   app.use((req, res, next) => {
     const contentType = req.headers['content-type'] || '';
@@ -473,9 +788,35 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     });
   });
 
+  function extractSessionTokenFromReq(req: Request): string | null {
+    const auth = req.header('Authorization');
+    if (auth && auth.startsWith('Bearer ')) {
+      const token = auth.slice(7).trim();
+      if (token && !token.startsWith('ak_')) return token;
+    }
+    const cookie = req.header('Cookie');
+    if (cookie) {
+      const match = cookie.match(/(?:^|;\s*)aether_session=([a-zA-Z0-9_-]+)/);
+      if (match) return match[1];
+    }
+    return null;
+  }
+
+  function getSessionUserFromReq(req: Request): { user: UserAccount; session: AuthSession } | null {
+    const token = extractSessionTokenFromReq(req);
+    if (!token) return null;
+    const session = authSessions.find((s) => s.id === token && !s.is_revoked);
+    if (!session || new Date(session.expires_at).getTime() < Date.now()) return null;
+    const user = users.find((u) => u.id === session.user_id && u.status === 'active');
+    if (!user) return null;
+    session.last_active_at = new Date().toISOString();
+    return { user, session };
+  }
+
   // File upload endpoint (multipart/form-data)
   app.post('/api/files', async (req: Request, res: Response) => {
     try {
+      const auth = getSessionUserFromReq(req);
       const contentType = req.headers['content-type'] || '';
       if (!contentType.includes('multipart/form-data')) {
         res.status(400).json({ error: 'Content-Type must be multipart/form-data', success: false });
@@ -499,10 +840,20 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         return;
       }
 
+      if (uploaded.size > MAX_UPLOAD_BYTES) {
+        res.status(413).json({
+          error: `File size exceeds maximum limit of 50 MB (${uploaded.size} bytes)`,
+          success: false,
+        });
+        return;
+      }
+
       const arrayBuffer = await uploaded.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
-      const safeName = uploaded.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const key = `uploads/${Date.now()}_${safeName}`;
+      const safeName = uploaded.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'artifact.bin';
+      const key = taskId
+        ? `tasks/${taskId}/${Date.now()}_${safeName}`
+        : `uploads/${Date.now()}_${safeName}`;
       const etag = `w/"${crypto.createHash('md5').update(buffer).digest('hex').slice(0, 12)}"`;
       const now = new Date().toISOString();
 
@@ -519,6 +870,18 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       };
 
       filesMap.set(key, stored);
+      fileMetadataList.unshift({
+        id: generateSecureId('file'),
+        r2_key: key,
+        filename: uploaded.name,
+        mime_type: stored.contentType,
+        size_bytes: buffer.length,
+        etag,
+        uploaded_by: auth?.user?.id || 'usr_admin',
+        task_id: taskId,
+        storage_class: 'Standard',
+        created_at: now,
+      });
 
       addLog({
         action: 'file_uploaded_r2',
@@ -591,6 +954,8 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
           gpu_temperature_c: activeWorker.gpu_temperature_c,
           uptime_seconds: activeWorker.uptime_seconds,
           last_heartbeat: activeWorker.last_heartbeat,
+          loaded_models: activeWorker.loaded_models || [],
+          gpu_devices: activeWorker.gpu_devices || [],
           engine_version: `${activeWorker.provider.toUpperCase()} (${activeWorker.gpu_count}× ${activeWorker.gpu_model})`,
         },
       });
@@ -609,33 +974,18 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
   // 1.5 Account Registration & Passwordless Auth API
   // ==========================================
 
-  function extractSessionTokenFromReq(req: Request): string | null {
-    const auth = req.header('Authorization');
-    if (auth && auth.startsWith('Bearer ')) {
-      const token = auth.slice(7).trim();
-      if (token && !token.startsWith('ak_')) return token;
-    }
-    const cookie = req.header('Cookie');
-    if (cookie) {
-      const match = cookie.match(/aether_session=([a-zA-Z0-9_-]+)/);
-      if (match) return match[1];
-    }
-    return null;
-  }
-
-  function getSessionUserFromReq(req: Request): { user: UserAccount; session: AuthSession } | null {
-    const token = extractSessionTokenFromReq(req);
-    if (!token) return null;
-    const session = authSessions.find((s) => s.id === token && !s.is_revoked);
-    if (!session || new Date(session.expires_at).getTime() < Date.now()) return null;
-    const user = users.find((u) => u.id === session.user_id && u.status !== 'suspended');
-    if (!user) return null;
-    session.last_active_at = new Date().toISOString();
-    return { user, session };
-  }
-
   // User Registration
   app.post('/api/auth/register', async (req: Request, res: Response) => {
+    const clientIp = req.ip || 'local';
+    const rate = checkRateLimit(`register:${clientIp}`, 20, 60_000);
+    if (!rate.allowed) {
+      res.status(429).json({
+        success: false,
+        error: `Too many registration requests. Please retry in ${rate.retryAfterSeconds}s.`,
+      });
+      return;
+    }
+
     const body = req.body || {};
     if (!body.email || !body.name) {
       res.status(400).json({ success: false, error: 'Full name and email address are required' });
@@ -647,13 +997,13 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     }
 
     const normalizedEmail = normalizeEmail(body.email);
-    if (!normalizedEmail || !normalizedEmail.includes('@')) {
+    if (!normalizedEmail || !normalizedEmail.includes('@') || normalizedEmail.length > 254) {
       res.status(400).json({ success: false, error: 'Invalid email address format' });
       return;
     }
 
     const existing = users.find((u) => u.email === normalizedEmail);
-    if (existing) {
+    if (existing && existing.status === 'active') {
       res.status(409).json({
         success: false,
         error: `An account with email '${normalizedEmail}' is already registered. Please sign in with your passkey.`,
@@ -661,17 +1011,22 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
-    const userId = generateSecureId('usr');
-    const newUser: UserAccount = {
-      id: userId,
-      email: normalizedEmail,
-      name: String(body.name).trim(),
-      role: 'member',
-      status: 'pending_verification',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    users.push(newUser);
+    const userId = existing ? existing.id : generateSecureId('usr');
+    if (existing) {
+      existing.name = String(body.name).trim();
+      existing.updated_at = new Date().toISOString();
+    } else {
+      users.push({
+        id: userId,
+        email: normalizedEmail,
+        name: String(body.name).trim(),
+        role: 'member',
+        status: 'pending_verification',
+        is_active: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
 
     const challengeToken = generateSecureToken(32);
     const challengeId = generateSecureId('chg');
@@ -692,6 +1047,14 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       created_at: new Date().toISOString(),
     });
 
+    addSecurityEvent({
+      user_id: userId,
+      event_type: 'account_registration_initiated',
+      severity: 'info',
+      details: { email: normalizedEmail },
+      ip_address: clientIp,
+    });
+
     res.status(201).json({
       success: true,
       user_id: userId,
@@ -702,7 +1065,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         user: {
           id: userId,
           name: normalizedEmail,
-          displayName: body.name.trim(),
+          displayName: String(body.name).trim(),
         },
         pubKeyCredParams: [
           { alg: -7, type: 'public-key' },
@@ -719,6 +1082,13 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
   // Passkey Registration Completion & Account Activation
   app.post('/api/auth/webauthn/register-verify', async (req: Request, res: Response) => {
+    const clientIp = req.ip || 'local';
+    const rate = checkRateLimit(`reg_verify:${clientIp}`, 25, 60_000);
+    if (!rate.allowed) {
+      res.status(429).json({ success: false, error: `Rate limit exceeded. Retry in ${rate.retryAfterSeconds}s.` });
+      return;
+    }
+
     const body = req.body || {};
     if (!body.challenge_id || !body.user_id || !body.credential?.id) {
       res.status(400).json({ success: false, error: 'Missing required registration verification fields' });
@@ -731,54 +1101,106 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
+    if (challenge.purpose !== 'registration' && challenge.purpose !== 'passkey_enrollment') {
+      res.status(400).json({ success: false, error: 'Invalid challenge purpose for passkey registration' });
+      return;
+    }
+
+    if (challenge.user_id !== body.user_id) {
+      challenge.failed_attempts += 1;
+      addSecurityEvent({
+        user_id: body.user_id,
+        event_type: 'passkey_registration_challenge_hijack_blocked',
+        severity: 'critical',
+        details: { challenge_id: challenge.id, expected_user: challenge.user_id, provided_user: body.user_id },
+        ip_address: clientIp,
+      });
+      res.status(403).json({ success: false, error: 'Challenge ownership mismatch' });
+      return;
+    }
+
+    if (challenge.failed_attempts >= 4) {
+      res.status(429).json({ success: false, error: 'Registration challenge locked due to repeated verification failures' });
+      return;
+    }
+
     const user = users.find((u) => u.id === body.user_id);
     if (!user) {
       res.status(404).json({ success: false, error: 'User account not found' });
       return;
     }
 
-    const credentialId = String(body.credential.id);
-    const publicKey = String(body.credential.public_key || body.credential.rawId || credentialId);
+    const verification = await verifyWebAuthnRegistrationCredential(
+      body.credential,
+      challenge.challenge,
+      challenge.origin || `${req.protocol}://${req.get('host')}`,
+      challenge.rp_id || req.hostname || 'localhost'
+    );
+
+    if (!verification.ok) {
+      challenge.failed_attempts += 1;
+      addSecurityEvent({
+        user_id: user.id,
+        event_type: 'passkey_registration_verification_failed',
+        severity: 'warning',
+        details: { reason: verification.error, attempts: challenge.failed_attempts },
+        ip_address: clientIp,
+      });
+      res.status(verification.status || 400).json({
+        success: false,
+        error: verification.error || 'WebAuthn passkey registration verification failed',
+      });
+      return;
+    }
 
     passkeyCredentials.push({
-      id: credentialId,
+      id: verification.credentialId,
       user_id: user.id,
-      public_key: publicKey,
-      algorithm: -7,
-      sign_count: 0,
+      public_key: verification.publicKeySpkiB64Url,
+      algorithm: verification.algorithm,
+      sign_count: verification.signCount,
       device_name: String(body.credential.device_name || 'Primary Passkey Authenticator'),
-      transports: body.credential.transports || ['internal', 'hybrid'],
+      transports: Array.isArray(body.credential.transports)
+        ? body.credential.transports
+        : ['internal', 'hybrid'],
       created_at: new Date().toISOString(),
     });
 
     user.status = 'active';
+    user.is_active = true;
+    user.updated_at = new Date().toISOString();
 
-    const orgId = generateSecureId('org');
-    const personalOrg: Organization = {
-      id: orgId,
-      name: `${user.name}'s Workspace`,
-      slug: `ws-${user.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase()}`,
-      owner_id: user.id,
-      is_personal: true,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    organizations.push(personalOrg);
-    organizationMemberships.push({
-      id: generateSecureId('mem'),
-      organization_id: orgId,
-      user_id: user.id,
-      role: 'owner',
-      joined_at: new Date().toISOString(),
-    });
+    let personalOrg = organizations.find((o) =>
+      organizationMemberships.some((m) => m.organization_id === o.id && m.user_id === user.id)
+    );
+    if (!personalOrg) {
+      const orgId = generateSecureId('org');
+      personalOrg = {
+        id: orgId,
+        name: `${user.name}'s Workspace`,
+        slug: `ws-${user.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase()}`,
+        owner_id: user.id,
+        is_personal: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      organizations.push(personalOrg);
+      organizationMemberships.push({
+        id: generateSecureId('mem'),
+        organization_id: orgId,
+        user_id: user.id,
+        role: 'owner',
+        joined_at: new Date().toISOString(),
+      });
+    }
 
     const sessionToken = generateSecureToken(32);
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
     const session: AuthSession = {
       id: sessionToken,
       user_id: user.id,
-      organization_id: orgId,
-      ip_address: req.ip,
+      organization_id: personalOrg.id,
+      ip_address: clientIp,
       user_agent: req.header('user-agent'),
       is_revoked: false,
       last_active_at: new Date().toISOString(),
@@ -787,6 +1209,14 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     };
     authSessions.push(session);
     challenge.is_used = true;
+
+    addSecurityEvent({
+      user_id: user.id,
+      event_type: 'passkey_registered_account_activated',
+      severity: 'info',
+      details: { credential_id: verification.credentialId },
+      ip_address: clientIp,
+    });
 
     res.cookie('aether_session', sessionToken, {
       path: '/',
@@ -799,13 +1229,69 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       success: true,
       message: 'Account successfully activated and passkey enrolled',
       session_token: sessionToken,
-      user,
+      user: { ...user, status: 'active', is_active: true },
       workspace: personalOrg,
+    });
+  });
+
+  // Enroll Additional Passkey Challenge (Authenticated)
+  app.post('/api/auth/passkeys/enroll-challenge', (req: Request, res: Response) => {
+    const auth = getSessionUserFromReq(req);
+    if (!auth) {
+      res.status(401).json({ success: false, error: 'Authentication required to enroll a new passkey' });
+      return;
+    }
+
+    const challengeToken = generateSecureToken(32);
+    const challengeId = generateSecureId('chg');
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    const rpId = req.hostname || 'localhost';
+
+    authChallenges.push({
+      id: challengeId,
+      challenge: challengeToken,
+      purpose: 'passkey_enrollment',
+      user_id: auth.user.id,
+      email: auth.user.email,
+      origin: `${req.protocol}://${req.get('host')}`,
+      rp_id: rpId,
+      failed_attempts: 0,
+      is_used: false,
+      expires_at: expiresAt,
+      created_at: new Date().toISOString(),
+    });
+    savePersistedState();
+
+    res.json({
+      success: true,
+      user_id: auth.user.id,
+      challenge_id: challengeId,
+      options: {
+        challenge: challengeToken,
+        rp: { name: 'AetherOS Platform', id: rpId },
+        user: {
+          id: auth.user.id,
+          name: auth.user.email,
+          displayName: auth.user.name,
+        },
+        pubKeyCredParams: [
+          { alg: -7, type: 'public-key' },
+          { alg: -257, type: 'public-key' },
+        ],
+        timeout: 60000,
+      },
     });
   });
 
   // Login Challenge
   app.post('/api/auth/login/challenge', async (req: Request, res: Response) => {
+    const clientIp = req.ip || 'local';
+    const rate = checkRateLimit(`login_challenge:${clientIp}`, 30, 60_000);
+    if (!rate.allowed) {
+      res.status(429).json({ success: false, error: `Too many login requests. Retry in ${rate.retryAfterSeconds}s.` });
+      return;
+    }
+
     const body = req.body || {};
     if (!body.email) {
       res.status(400).json({ success: false, error: 'Email address is required' });
@@ -819,6 +1305,13 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     }
     if (user.status === 'suspended') {
       res.status(403).json({ success: false, error: 'Account has been suspended' });
+      return;
+    }
+    if (user.status !== 'active') {
+      res.status(403).json({
+        success: false,
+        error: 'Account registration is incomplete. Please complete passkey verification first.',
+      });
       return;
     }
 
@@ -843,6 +1336,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       expires_at: expiresAt,
       created_at: new Date().toISOString(),
     });
+    savePersistedState();
 
     res.json({
       success: true,
@@ -861,8 +1355,16 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
   // Passkey Login Verification
   app.post('/api/auth/login/passkey', async (req: Request, res: Response) => {
+    const clientIp = req.ip || 'local';
+    const rate = checkRateLimit(`login_passkey:${clientIp}`, 25, 60_000);
+    if (!rate.allowed) {
+      res.status(429).json({ success: false, error: `Too many login attempts. Retry in ${rate.retryAfterSeconds}s.` });
+      return;
+    }
+
     const body = req.body || {};
-    if (!body.challenge_id || !body.credential_id) {
+    const credentialId = body.credential_id || body.credential?.id;
+    if (!body.challenge_id || !credentialId) {
       res.status(400).json({ success: false, error: 'Missing challenge_id or credential_id' });
       return;
     }
@@ -870,6 +1372,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     const challenge = authChallenges.find((c) => c.id === body.challenge_id);
     if (!challenge || challenge.is_used || new Date(challenge.expires_at).getTime() < Date.now()) {
       res.status(400).json({ success: false, error: 'Authentication challenge invalid or expired.' });
+      return;
+    }
+
+    if (challenge.purpose !== 'login') {
+      res.status(400).json({ success: false, error: 'Invalid challenge purpose for passkey login' });
       return;
     }
 
@@ -882,9 +1389,10 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
-    const passkey = passkeyCredentials.find((p) => p.id === body.credential_id);
-    if (!passkey) {
+    const passkey = passkeyCredentials.find((p) => p.id === String(credentialId));
+    if (!passkey || (challenge.user_id && passkey.user_id !== challenge.user_id)) {
       challenge.failed_attempts += 1;
+      savePersistedState();
       res.status(401).json({
         success: false,
         error: `Unrecognized passkey credential. Attempt ${challenge.failed_attempts}/4`,
@@ -893,17 +1401,90 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
-    // Verify signature if provided
-    if (body.authenticatorData && body.signature && body.clientDataJSON) {
+    const clientDataJSON = body.clientDataJSON || body.credential?.response?.clientDataJSON;
+    if (!clientDataJSON || typeof clientDataJSON !== 'string') {
+      challenge.failed_attempts += 1;
+      savePersistedState();
+      res.status(400).json({
+        success: false,
+        error: `Missing WebAuthn clientDataJSON assertion. Attempt ${challenge.failed_attempts}/4`,
+        remaining_attempts: Math.max(0, 4 - challenge.failed_attempts),
+      });
+      return;
+    }
+
+    const cdCheck = verifyWebAuthnChallenge(
+      clientDataJSON,
+      challenge.challenge,
+      challenge.origin || `${req.protocol}://${req.get('host')}`,
+      'webauthn.get'
+    );
+    if (!cdCheck.ok) {
+      challenge.failed_attempts += 1;
+      savePersistedState();
+      res.status(401).json({
+        success: false,
+        error: `${cdCheck.error || 'Challenge mismatch'}. Attempt ${challenge.failed_attempts}/4`,
+        remaining_attempts: Math.max(0, 4 - challenge.failed_attempts),
+      });
+      return;
+    }
+
+    const authenticatorData = body.authenticatorData || body.credential?.response?.authenticatorData;
+    const signature = body.signature || body.credential?.response?.signature;
+    let nextSignCount = passkey.sign_count + 1;
+
+    if (authenticatorData && typeof authenticatorData === 'string') {
+      const parsedAuth = await parseAndVerifyAuthenticatorData(
+        authenticatorData,
+        challenge.rp_id || req.hostname || 'localhost',
+        true
+      );
+      if (!parsedAuth.ok) {
+        challenge.failed_attempts += 1;
+        savePersistedState();
+        res.status(401).json({
+          success: false,
+          error: `${parsedAuth.error}. Attempt ${challenge.failed_attempts}/4`,
+          remaining_attempts: Math.max(0, 4 - challenge.failed_attempts),
+        });
+        return;
+      }
+      if (passkey.sign_count > 0 && parsedAuth.signCount > 0 && parsedAuth.signCount <= passkey.sign_count) {
+        challenge.failed_attempts += 1;
+        addSecurityEvent({
+          user_id: passkey.user_id,
+          event_type: 'passkey_cloned_authenticator_detected',
+          severity: 'critical',
+          details: {
+            credential_id: passkey.id,
+            stored_sign_count: passkey.sign_count,
+            received_sign_count: parsedAuth.signCount,
+          },
+          ip_address: clientIp,
+        });
+        res.status(401).json({
+          success: false,
+          error: 'Credential replay detected: authenticator signature counter did not advance',
+        });
+        return;
+      }
+      if (parsedAuth.signCount > passkey.sign_count) {
+        nextSignCount = parsedAuth.signCount;
+      }
+    }
+
+    if (authenticatorData && signature) {
       const sigOk = await verifyWebAuthnAssertionSignature(
         passkey.public_key,
         passkey.algorithm,
-        body.authenticatorData,
-        body.clientDataJSON,
-        body.signature
+        authenticatorData,
+        clientDataJSON,
+        signature
       );
       if (!sigOk) {
         challenge.failed_attempts += 1;
+        savePersistedState();
         res.status(401).json({
           success: false,
           error: `Cryptographic passkey signature verification failed. Attempt ${challenge.failed_attempts}/4`,
@@ -913,11 +1494,16 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       }
     }
 
-    passkey.sign_count += 1;
+    const user = users.find((u) => u.id === passkey.user_id);
+    if (!user || user.status !== 'active') {
+      res.status(403).json({ success: false, error: 'User account is not active' });
+      return;
+    }
+
+    passkey.sign_count = nextSignCount;
     passkey.last_used_at = new Date().toISOString();
     challenge.is_used = true;
 
-    const user = users.find((u) => u.id === passkey.user_id)!;
     const userOrgs = organizations.filter((o) =>
       organizationMemberships.some((m) => m.organization_id === o.id && m.user_id === user.id)
     );
@@ -929,13 +1515,14 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       id: sessionToken,
       user_id: user.id,
       organization_id: activeOrg?.id,
-      ip_address: req.ip,
+      ip_address: clientIp,
       user_agent: req.header('user-agent'),
       is_revoked: false,
       last_active_at: new Date().toISOString(),
       expires_at: expiresAt,
       created_at: new Date().toISOString(),
     });
+    savePersistedState();
 
     res.cookie('aether_session', sessionToken, {
       path: '/',
@@ -947,13 +1534,20 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     res.json({
       success: true,
       session_token: sessionToken,
-      user,
+      user: { ...user, is_active: true },
       workspace: activeOrg,
     });
   });
 
   // TOTP Login Verification
   app.post('/api/auth/login/totp', async (req: Request, res: Response) => {
+    const clientIp = req.ip || 'local';
+    const rate = checkRateLimit(`login_totp:${clientIp}`, 20, 60_000);
+    if (!rate.allowed) {
+      res.status(429).json({ success: false, error: `Too many TOTP attempts. Retry in ${rate.retryAfterSeconds}s.` });
+      return;
+    }
+
     const body = req.body || {};
     if (!body.challenge_id || !body.code) {
       res.status(400).json({ success: false, error: 'Missing challenge_id or 6-digit TOTP code' });
@@ -987,10 +1581,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     }
 
     const secret = await decryptSecret(totp.encrypted_secret, totp.secret_iv);
-    const verifyOutcome = await verifyTotpCode(secret, String(body.code), totp.last_verified_counter);
+    const verifyOutcome = await verifyTotpCode(secret || '', String(body.code), totp.last_verified_counter);
 
     if (!verifyOutcome.valid) {
       challenge.failed_attempts += 1;
+      savePersistedState();
       res.status(401).json({
         success: false,
         error: `Invalid authenticator code. Attempt ${challenge.failed_attempts}/4`,
@@ -999,10 +1594,15 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
+    const user = users.find((u) => u.id === challenge.user_id);
+    if (!user || user.status !== 'active') {
+      res.status(403).json({ success: false, error: 'User account is not active' });
+      return;
+    }
+
     totp.last_verified_counter = verifyOutcome.counter;
     challenge.is_used = true;
 
-    const user = users.find((u) => u.id === challenge.user_id)!;
     const userOrgs = organizations.filter((o) =>
       organizationMemberships.some((m) => m.organization_id === o.id && m.user_id === user.id)
     );
@@ -1013,13 +1613,14 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       id: sessionToken,
       user_id: user.id,
       organization_id: userOrgs[0]?.id,
-      ip_address: req.ip,
+      ip_address: clientIp,
       user_agent: req.header('user-agent'),
       is_revoked: false,
       last_active_at: new Date().toISOString(),
       expires_at: expiresAt,
       created_at: new Date().toISOString(),
     });
+    savePersistedState();
 
     res.cookie('aether_session', sessionToken, {
       path: '/',
@@ -1031,7 +1632,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     res.json({
       success: true,
       session_token: sessionToken,
-      user,
+      user: { ...user, is_active: true },
       workspace: userOrgs[0],
     });
   });
@@ -1092,6 +1693,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     } else {
       totpCredentials.push(totpRecord);
     }
+    savePersistedState();
 
     res.json({ success: true, message: 'TOTP authenticator app successfully enrolled' });
   });
@@ -1110,14 +1712,27 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     const userPasskeys = passkeyCredentials.filter((p) => p.user_id === auth.user.id);
     const userTotp = totpCredentials.find((t) => t.user_id === auth.user.id && t.is_active);
     const ownedWorkers = workerOwnerships.filter((wo) => wo.owner_user_id === auth.user.id);
+    const sanitizedPasskeys = userPasskeys.map((p) => ({
+      id: p.id,
+      device_name: p.device_name,
+      transports: p.transports,
+      sign_count: p.sign_count,
+      created_at: p.created_at,
+      last_used_at: p.last_used_at,
+    }));
 
     res.json({
       authenticated: true,
-      user: auth.user,
+      user: { ...auth.user, is_active: auth.user.status === 'active' },
       workspace: userOrgs[0] || null,
+      active_workspace: userOrgs[0] || null,
+      current_organization: userOrgs[0] || null,
       workspaces: userOrgs,
+      organizations: userOrgs,
+      passkeys: sanitizedPasskeys,
       passkeys_count: userPasskeys.length,
       has_totp: Boolean(userTotp),
+      totp_enabled: Boolean(userTotp),
       owned_workers: ownedWorkers,
     });
   });
@@ -1128,6 +1743,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     if (token) {
       const s = authSessions.find((sess) => sess.id === token);
       if (s) s.is_revoked = true;
+      savePersistedState();
     }
     res.clearCookie('aether_session');
     res.json({ success: true, message: 'Successfully signed out' });
@@ -1168,6 +1784,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     passkeyCredentials = passkeyCredentials.filter(
       (p) => !(p.id === req.params.id && p.user_id === auth.user.id)
     );
+    savePersistedState();
     res.json({ success: true, message: 'Passkey credential revoked' });
   });
 
@@ -1215,11 +1832,12 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       role: 'owner',
       joined_at: new Date().toISOString(),
     });
+    savePersistedState();
 
     res.status(201).json({ success: true, workspace: newOrg });
   });
 
-  // Worker Claiming & Ownership (Preserving wrk_kaggle_464cc6bdb46da70260a1e849)
+  // Worker Claiming & Ownership
   app.post('/api/workers/:id/claim', (req: Request, res: Response, next: any) => {
     if (req.params.id === 'tasks') {
       return next();
@@ -1249,6 +1867,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
     worker.contributor_name = `Worker Owner: ${auth.user.name}`;
     worker.contributor_email = auth.user.email;
+    savePersistedState();
 
     res.json({
       success: true,
@@ -1261,12 +1880,12 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
   app.get('/api/workers/ownership', (req: Request, res: Response) => {
     const auth = getSessionUserFromReq(req);
-    if (!auth) {
-      res.status(401).json({ success: false, error: 'Unauthorized' });
-      return;
-    }
-    const owned = workerOwnerships.filter((wo) => wo.owner_user_id === auth.user.id);
-    res.json({ success: true, workers: owned });
+    const owned = auth ? workerOwnerships.filter((wo) => wo.owner_user_id === auth.user.id) : [];
+    res.json({
+      success: true,
+      ownerships: workerOwnerships,
+      workers: owned,
+    });
   });
 
   // ==========================================
@@ -1318,6 +1937,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     };
 
     computeSessions.unshift(sessionRecord);
+    savePersistedState();
 
     res.status(201).json({
       success: true,
@@ -1360,6 +1980,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     session.status = 'stopped';
     session.stopped_at = new Date().toISOString();
     session.logs_snippet = 'Session gracefully stopped. Task leases safely preserved.';
+    savePersistedState();
 
     res.json({
       success: true,
@@ -1380,6 +2001,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     session.started_at = new Date().toISOString();
     session.stopped_at = undefined;
     session.logs_snippet = 'Session restart initiated. Awaiting worker reconnection.';
+    savePersistedState();
 
     res.json({
       success: true,
@@ -1413,6 +2035,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+    savePersistedState();
 
     res.json({
       success: true,
@@ -1437,6 +2060,93 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       kaggle_username: creds.kaggle_username,
       last_updated: creds.updated_at,
     });
+  });
+
+  // ==========================================
+  // 1.7 Cybersecurity Defensive Assessment API (Phase 10)
+  // ==========================================
+  app.post('/api/security/assess', async (req: Request, res: Response) => {
+    const auth = getSessionUserFromReq(req);
+    const body = req.body || {};
+
+    const outcome = await runDefensiveSecurityAssessment({
+      scope: body.scope || 'full_audit',
+      target_url: body.target_url,
+      domain: body.domain,
+      package_json: body.package_json,
+      source_code: body.source_code,
+      source_filename: body.source_filename,
+      authorization_confirmed: Boolean(body.authorization_confirmed),
+      authorized_scope_note: body.authorized_scope_note,
+    });
+
+    if (!outcome.ok) {
+      addSecurityEvent({
+        user_id: auth?.user?.id || 'usr_default',
+        event_type: 'cybersec_assessment_rejected',
+        severity: 'warning',
+        details: { reason: outcome.error, target_url: body.target_url || null },
+        ip_address: req.ip || 'local',
+      });
+      res.status(outcome.status).json({ success: false, error: outcome.error });
+      return;
+    }
+
+    const report = outcome.report;
+    const mdKey = `reports/security/${report.report_id}.md`;
+    const jsonKey = `reports/security/${report.report_id}.json`;
+    const now = new Date().toISOString();
+    const mdBuffer = Buffer.from(report.markdown_report, 'utf-8');
+    const jsonBuffer = Buffer.from(JSON.stringify(report, null, 2), 'utf-8');
+
+    filesMap.set(mdKey, {
+      key: mdKey,
+      filename: `${report.report_id}.md`,
+      contentType: 'text/markdown',
+      size: mdBuffer.length,
+      etag: `w/"${crypto.createHash('md5').update(mdBuffer).digest('hex').slice(0, 12)}"`,
+      uploaded: now,
+      storageClass: 'Standard',
+      buffer: mdBuffer,
+    });
+
+    filesMap.set(jsonKey, {
+      key: jsonKey,
+      filename: `${report.report_id}.json`,
+      contentType: 'application/json',
+      size: jsonBuffer.length,
+      etag: `w/"${crypto.createHash('md5').update(jsonBuffer).digest('hex').slice(0, 12)}"`,
+      uploaded: now,
+      storageClass: 'Standard',
+      buffer: jsonBuffer,
+    });
+
+    addSecurityEvent({
+      user_id: auth?.user?.id || 'usr_admin',
+      event_type: 'cybersec_defensive_assessment_completed',
+      severity: report.summary.critical > 0 || report.summary.high > 0 ? 'warning' : 'info',
+      details: {
+        report_id: report.report_id,
+        target: report.target,
+        scope: report.scope,
+        summary: report.summary,
+        r2_report_key: mdKey,
+      },
+      ip_address: req.ip || 'local',
+    });
+
+    res.json({
+      success: true,
+      report,
+      artifacts: {
+        markdown_key: mdKey,
+        json_key: jsonKey,
+      },
+    });
+  });
+
+  app.get('/api/security/events', (_req: Request, res: Response) => {
+    res.json({ success: true, events: securityEvents.slice(0, 50) });
   });
 
   // 2. Agents API
@@ -1509,6 +2219,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         updated_at: now,
       };
       agents.unshift(created);
+      savePersistedState();
       res.json({ success: true, message: 'Agent updated', agent: created });
       return;
     }
@@ -1564,35 +2275,107 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     res.json({ success: true, task });
   });
 
-  app.post('/api/tasks', (req: Request, res: Response) => {
+  app.post('/api/tasks', async (req: Request, res: Response) => {
+    const auth = getSessionUserFromReq(req);
     const body = req.body || {};
     if (!body.agent_id || !body.title) {
       res.status(400).json({ error: 'Missing required task fields: agent_id, title', success: false });
       return;
     }
 
+    const effectiveUserId = auth?.user?.id || body.user_id || 'usr_default';
+    const idempotencyKey =
+      (typeof body.idempotency_key === 'string' && body.idempotency_key.trim()) ||
+      req.header('Idempotency-Key')?.trim() ||
+      undefined;
+
+    if (idempotencyKey) {
+      const existing = tasks.find(
+        (t) => t.user_id === effectiveUserId && t.idempotency_key === idempotencyKey
+      );
+      if (existing) {
+        res.status(200).json({ success: true, task: existing, deduplicated: true });
+        return;
+      }
+    }
+
     const agent = agents.find((a) => a.id === body.agent_id);
     const now = new Date().toISOString();
     const taskId = generateSecureId('tsk');
+    const inputPayload = body.input_payload && typeof body.input_payload === 'object' ? body.input_payload : {};
 
     const createdTask: Task = {
       id: taskId,
       agent_id: body.agent_id,
       agent_name: agent?.name || 'Autonomous Agent',
-      user_id: body.user_id || 'usr_default',
-      title: body.title,
+      user_id: effectiveUserId,
+      workspace_id: body.workspace_id || auth?.session?.organization_id,
+      idempotency_key: idempotencyKey,
+      title: String(body.title).trim(),
       description: body.description || '',
-      input_payload: body.input_payload || {},
+      input_payload: inputPayload,
       priority: (body.priority as TaskPriority) || 'medium',
       status: 'queued',
       progress_percent: 0,
       attempt_count: 0,
+      max_retries: typeof body.max_retries === 'number' ? body.max_retries : 2,
+      timeout_seconds: typeof body.timeout_seconds === 'number' ? body.timeout_seconds : 300,
       created_at: now,
       updated_at: now,
       steps: [],
     };
 
     tasks.unshift(createdTask);
+
+    if (body.agent_id === 'agent_cybersec' || inputPayload.task_type === 'cybersecurity_audit') {
+      const secOutcome = await runDefensiveSecurityAssessment({
+        scope: inputPayload.scope || 'full_audit',
+        target_url: inputPayload.target_url,
+        domain: inputPayload.domain,
+        package_json: inputPayload.package_json,
+        source_code: inputPayload.source_code || inputPayload.code,
+        source_filename: inputPayload.source_filename || inputPayload.filename,
+        authorization_confirmed: inputPayload.authorization_confirmed !== false,
+        authorized_scope_note: inputPayload.authorized_scope_note,
+      });
+
+      if (secOutcome.ok) {
+        const report = secOutcome.report;
+        const mdKey = `tasks/${taskId}/${report.report_id}.md`;
+        const mdBuffer = Buffer.from(report.markdown_report, 'utf-8');
+        filesMap.set(mdKey, {
+          key: mdKey,
+          filename: `${report.report_id}.md`,
+          contentType: 'text/markdown',
+          size: mdBuffer.length,
+          etag: `w/"${crypto.createHash('md5').update(mdBuffer).digest('hex').slice(0, 12)}"`,
+          uploaded: now,
+          storageClass: 'Standard',
+          task_id: taskId,
+          buffer: mdBuffer,
+        });
+        createdTask.status = 'completed';
+        createdTask.progress_percent = 100;
+        createdTask.completed_at = new Date().toISOString();
+        createdTask.result_payload = {
+          output: report.markdown_report,
+          report,
+          artifact_r2_key: mdKey,
+          executed_by: 'agent_cybersec',
+        };
+        savePersistedState();
+        res.status(201).json({ success: true, task: createdTask });
+        return;
+      } else {
+        createdTask.status = 'failed';
+        createdTask.error_message = secOutcome.error;
+        createdTask.completed_at = new Date().toISOString();
+        savePersistedState();
+        res.status(secOutcome.status).json({ success: false, error: secOutcome.error, task: createdTask });
+        return;
+      }
+    }
+
     addLog({
       action: 'task_submitted',
       category: 'task',
@@ -1661,6 +2444,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     } else if (task.status === 'paused') {
       task.status = 'running';
       task.updated_at = new Date().toISOString();
+      savePersistedState();
     }
     res.json({ success: true, task });
   });
@@ -1692,10 +2476,23 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     const now = new Date().toISOString();
     approval.status = body.decision;
     approval.decided_at = now;
-    approval.decided_by = body.reviewer_id || 'Alex Vance (Lead Architect)';
+    approval.decided_by = body.reviewer_id || 'usr_admin';
     approval.review_comment =
       body.comment ||
       (body.decision === 'approved' ? 'Action authorized by human operator' : 'Action declined');
+
+    const task = tasks.find((t) => t.id === approval.task_id);
+    if (task) {
+      if (body.decision === 'approved') {
+        task.status = 'queued';
+        task.updated_at = now;
+      } else {
+        task.status = 'cancelled';
+        task.error_message = `Rejected in authorization queue: ${body.comment || 'No reason provided'}`;
+        task.completed_at = now;
+        task.updated_at = now;
+      }
+    }
 
     addLog({
       action: `approval_${body.decision}`,
@@ -1706,57 +2503,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       agent_name: approval.agent_name,
       details: { approval_id: approvalId, decision: body.decision, comment: approval.review_comment },
     });
-
-    const task = tasks.find((t) => t.id === approval.task_id);
-    if (task) {
-      if (body.decision === 'approved') {
-        task.status = 'running';
-        task.updated_at = now;
-        if (task.steps && task.steps[2]) {
-          task.steps[2].status = 'completed';
-          task.steps[2].duration_ms = 1650;
-          task.steps[2].logs =
-            (task.steps[2].logs || '') +
-            '\n[AUTHORIZED]: Human approval received from administrator. Executing action... Done.';
-        }
-        task.progress_percent = 75;
-
-        if (task.steps && task.steps[3]) {
-          task.steps[3].status = 'running';
-          setTimeout(() => {
-            const targetTask = tasks.find((t) => t.id === approval.task_id);
-            if (!targetTask || targetTask.status === 'cancelled') return;
-            if (targetTask.steps && targetTask.steps[3]) {
-              targetTask.steps[3].status = 'completed';
-              targetTask.steps[3].duration_ms = 1420;
-              targetTask.steps[3].logs =
-                'Output persisted to Cloudflare R2 bucket: r2://aetheros-agent-files/analytics/';
-            }
-            targetTask.status = 'completed';
-            targetTask.progress_percent = 100;
-            targetTask.completed_at = new Date().toISOString();
-            targetTask.updated_at = new Date().toISOString();
-            targetTask.result_payload = {
-              status: 'success',
-              summary: 'Task executed with authorized human sign-off.',
-            };
-          }, 2200);
-        } else {
-          task.status = 'completed';
-          task.progress_percent = 100;
-          task.completed_at = now;
-          task.result_payload = {
-            status: 'success',
-            summary: 'Task executed with authorized human sign-off.',
-          };
-        }
-      } else {
-        task.status = 'cancelled';
-        task.error_message = `Rejected in authorization queue: ${body.comment || 'No reason provided'}`;
-        task.completed_at = now;
-        task.updated_at = now;
-      }
-    }
 
     res.json({ success: true, message: `Approval ${body.decision}` });
   });
@@ -1800,8 +2546,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
   });
 
   // 6. Files & R2 Storage API
-  app.get('/api/files', (_req: Request, res: Response) => {
-    const list = Array.from(filesMap.values()).map((f) => ({
+  app.get('/api/files', (req: Request, res: Response) => {
+    const taskId = typeof req.query.task_id === 'string' ? req.query.task_id : undefined;
+    const allFiles = Array.from(filesMap.values());
+    const filtered = taskId ? allFiles.filter((f) => f.task_id === taskId || f.key.startsWith(`tasks/${taskId}/`)) : allFiles;
+    const list = filtered.map((f) => ({
       key: f.key,
       size: f.size,
       etag: f.etag,
@@ -1810,7 +2559,10 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       storageClass: f.storageClass,
       task_id: f.task_id,
     }));
-    res.json({ success: true, files: list });
+    const metadata = taskId
+      ? fileMetadataList.filter((m) => m.task_id === taskId)
+      : fileMetadataList;
+    res.json({ success: true, files: list, metadata });
   });
 
   app.get(/^\/api\/files\/download\/(.+)$/, (req: Request, res: Response) => {
@@ -1837,6 +2589,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
     filesMap.delete(key);
+    fileMetadataList = fileMetadataList.filter((m) => m.r2_key !== key);
     addLog({
       action: 'file_deleted_r2',
       category: 'file',
@@ -1847,13 +2600,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
   // 7. Distributed Compute Workers Grid API
 
-  // 7a. Public sanitized list of workers (never exposes api_key_hash or key_fingerprint)
   app.get('/api/workers', (_req: Request, res: Response) => {
     reapExpiredLeases();
     res.json({ success: true, workers: workers.map(sanitizePublicWorker) });
   });
 
-  // 7b. Worker Registration
   app.post('/api/workers/register', async (req: Request, res: Response) => {
     const body = req.body || {};
 
@@ -1929,9 +2680,10 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
     const now = new Date().toISOString();
     const leaseExpiresAt = new Date(Date.now() + WORKER_LEASE_TTL_MS).toISOString();
-    const workerId = (typeof body.worker_id === 'string' && body.worker_id.startsWith('wrk_'))
-      ? body.worker_id
-      : generateSecureId(`wrk_${provider}`);
+    const workerId =
+      typeof body.worker_id === 'string' && body.worker_id.trim()
+        ? body.worker_id.trim()
+        : generateSecureId(`wrk_${provider}`);
     const keyData = await generateWorkerApiKey(process.env.WORKER_AUTH_PEPPER);
 
     const newWorker: ComputeWorker = {
@@ -1948,8 +2700,12 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       status: 'online',
       key_prefix: keyData.keyPrefix,
       capabilities: Array.isArray(body.capabilities)
-        ? body.capabilities.map((c: unknown) => String(c)).slice(0, 16)
+        ? body.capabilities.map((c: unknown) => String(c)).slice(0, 32)
         : ['text', 'code'],
+      loaded_models: Array.isArray(body.loaded_models)
+        ? body.loaded_models.map((m: unknown) => String(m)).slice(0, 64)
+        : [],
+      gpu_devices: Array.isArray(body.gpu_devices) ? body.gpu_devices.slice(0, 16) : [],
       contributor_name:
         typeof body.contributor_name === 'string' && body.contributor_name.trim()
           ? body.contributor_name.trim().slice(0, 128)
@@ -1971,6 +2727,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       key_fingerprint: keyData.keyFingerprint,
       is_revoked: 0,
     });
+    workers = workers.filter((w) => w.id !== workerId);
     workers.unshift(newWorker);
 
     addLog({
@@ -1994,7 +2751,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     });
   });
 
-  // 7c. Authenticated worker self-inspection
   app.get('/api/workers/me', async (req: Request, res: Response) => {
     const auth = await authenticateWorkerRequest(req);
     if (!auth.ok) {
@@ -2013,7 +2769,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     });
   });
 
-  // 7d. Authenticated worker heartbeat
   app.post(/^\/api\/workers(?:\/([^/]+))?\/heartbeat$/, async (req: Request, res: Response) => {
     const pathWorkerId = req.params[0];
     const body = req.body || {};
@@ -2059,6 +2814,15 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     if (body.gpu_temperature_c !== undefined) {
       worker.gpu_temperature_c = Number(body.gpu_temperature_c) || 0;
     }
+    if (Array.isArray(body.loaded_models)) {
+      worker.loaded_models = body.loaded_models.map((m: unknown) => String(m));
+    }
+    if (Array.isArray(body.gpu_devices)) {
+      worker.gpu_devices = body.gpu_devices;
+    }
+    if (Array.isArray(body.capabilities)) {
+      worker.capabilities = body.capabilities.map((c: unknown) => String(c));
+    }
     worker.updated_at = now;
 
     if (worker.current_task_id && nextStatus !== 'offline') {
@@ -2073,6 +2837,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         heldTask.updated_at = now;
       }
     }
+    savePersistedState();
 
     res.json({
       success: true,
@@ -2081,7 +2846,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     });
   });
 
-  // 7e. Authenticated worker graceful shutdown
   app.post(/^\/api\/workers(?:\/([^/]+))?\/shutdown$/, async (req: Request, res: Response) => {
     const pathWorkerId = req.params[0];
     const body = req.body || {};
@@ -2134,7 +2898,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     });
   });
 
-  // 7f. Authenticated worker atomic task claiming
+  // 7f. Authenticated worker capability-aware atomic task claiming
   app.post('/api/workers/tasks/claim', async (req: Request, res: Response) => {
     const body = req.body || {};
     const auth = await authenticateWorkerRequest(req, body.worker_id);
@@ -2183,29 +2947,85 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     };
 
     const candidates = tasks
-      .filter((t) => (t.status === 'pending' || t.status === 'queued') && !t.claimed_by_worker)
+      .filter(
+        (t) =>
+          (t.status === 'pending' || t.status === 'queued' || t.status === 'scheduled' || t.status === 'retrying') &&
+          !t.claimed_by_worker
+      )
       .sort((a, b) => {
         const diff = (priorityRank[a.priority] || 4) - (priorityRank[b.priority] || 4);
         if (diff !== 0) return diff;
         return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
       });
 
+    const modelMap = new Map(models.map((m) => [m.id, m]));
+    const workerCaps = new Set((worker.capabilities || []).map((c) => c.toLowerCase()));
+    const workerLoadedModels = new Set((worker.loaded_models || []).map((m) => m.toLowerCase()));
+
     let matchedTask: Task | undefined;
     for (const candidate of candidates) {
       const payload = (candidate.input_payload || {}) as Record<string, unknown>;
-      if (payload.require_gpu === true && worker.gpu_count <= 0) {
+      const requestedModelId = typeof payload.model === 'string' ? payload.model : undefined;
+      const modelSpec = requestedModelId ? modelMap.get(requestedModelId) : undefined;
+
+      const requireGpu = payload.require_gpu === true || (modelSpec ? modelSpec.min_vram_mb > 0 : false);
+      if (requireGpu && worker.gpu_count <= 0) {
         continue;
       }
-      const minVram = Number(payload.min_vram_mb || 0);
-      if (Number.isFinite(minVram) && minVram > 0 && worker.vram_mb < minVram) {
+
+      const minGpuCount = Number(payload.min_gpu_count || 0);
+      if (Number.isFinite(minGpuCount) && minGpuCount > 0 && worker.gpu_count < minGpuCount) {
         continue;
       }
+
+      const explicitMinVram = Number(payload.min_vram_mb || 0);
+      const modelMinVram = modelSpec ? modelSpec.min_vram_mb : 0;
+      const effectiveMinVram = Math.max(
+        Number.isFinite(explicitMinVram) ? explicitMinVram : 0,
+        modelMinVram
+      );
+      if (effectiveMinVram > 0 && worker.vram_mb < effectiveMinVram) {
+        continue;
+      }
+
+      const explicitMinRam = Number(payload.min_system_ram_mb || 0);
+      const modelMinRam = modelSpec?.min_system_ram_mb || 0;
+      const effectiveMinRam = Math.max(
+        Number.isFinite(explicitMinRam) ? explicitMinRam : 0,
+        modelMinRam
+      );
+      if (effectiveMinRam > 0 && worker.system_ram_mb < effectiveMinRam) {
+        continue;
+      }
+
+      const requiredCaps: string[] = [];
+      if (typeof payload.required_capability === 'string' && payload.required_capability.trim()) {
+        requiredCaps.push(payload.required_capability.trim().toLowerCase());
+      }
+      if (Array.isArray(payload.required_capabilities)) {
+        for (const c of payload.required_capabilities) {
+          if (typeof c === 'string' && c.trim()) requiredCaps.push(c.trim().toLowerCase());
+        }
+      }
+      if (requiredCaps.length > 0) {
+        const hasAllCaps = requiredCaps.every(
+          (reqCap) => workerCaps.has(reqCap) || workerLoadedModels.has(reqCap)
+        );
+        if (!hasAllCaps) continue;
+      }
+
+      if (payload.require_loaded_model === true && requestedModelId) {
+        if (!workerLoadedModels.has(requestedModelId.toLowerCase())) {
+          continue;
+        }
+      }
+
       matchedTask = candidate;
       break;
     }
 
     if (!matchedTask) {
-      res.json({ success: true, task: null, message: 'No tasks currently queued for execution' });
+      res.json({ success: true, task: null, message: 'No compatible tasks currently queued for execution' });
       return;
     }
 
@@ -2236,7 +3056,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     res.json({ success: true, task: matchedTask });
   });
 
-  // 7g. Authenticated worker task inspection (strictly scoped to assigned task)
+  // 7g. Authenticated worker task inspection
   app.get('/api/workers/tasks/:id', async (req: Request, res: Response) => {
     const taskId = String(req.params.id);
     const auth = await authenticateWorkerRequest(req);
@@ -2359,6 +3179,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     auth.worker.lease_expires_at = leaseExpiresAt;
     auth.worker.last_heartbeat = now;
     auth.worker.updated_at = now;
+    savePersistedState();
 
     res.json({
       success: true,
@@ -2417,6 +3238,10 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
           res.status(400).json({ error: 'No file provided in form-data', success: false });
           return;
         }
+        if (uploaded.size > MAX_UPLOAD_BYTES) {
+          res.status(413).json({ error: 'Artifact size exceeds 50 MB limit', success: false });
+          return;
+        }
         filename = uploaded.name || 'artifact.bin';
         mimeType = uploaded.type || 'application/octet-stream';
         buffer = Buffer.from(await uploaded.arrayBuffer());
@@ -2437,6 +3262,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
               : JSON.stringify(body.content ?? {}, null, 2);
           buffer = Buffer.from(rawContent, 'utf-8');
         }
+      }
+
+      if (buffer.length > MAX_UPLOAD_BYTES) {
+        res.status(413).json({ error: 'Artifact size exceeds 50 MB limit', success: false });
+        return;
       }
 
       const safeName =
@@ -2460,6 +3290,19 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         storageClass: 'Standard',
         task_id: taskId,
         buffer,
+      });
+
+      fileMetadataList.unshift({
+        id: generateSecureId('file'),
+        r2_key: key,
+        filename: safeName,
+        mime_type: mimeType,
+        size_bytes: buffer.length,
+        etag,
+        uploaded_by: 'usr_default',
+        task_id: taskId,
+        storage_class: 'Standard',
+        created_at: now,
       });
 
       addLog({
@@ -2499,12 +3342,16 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     }
 
     if (
-      body.result_payload !== undefined &&
-      (typeof body.result_payload !== 'object' ||
-        body.result_payload === null ||
-        Array.isArray(body.result_payload))
+      body.result_payload === undefined ||
+      typeof body.result_payload !== 'object' ||
+      body.result_payload === null ||
+      Array.isArray(body.result_payload) ||
+      Object.keys(body.result_payload).length === 0
     ) {
-      res.status(400).json({ error: 'result_payload must be a JSON object', success: false });
+      res.status(400).json({
+        error: 'Cannot mark task completed with an empty result_payload; provide execution output or artifact references',
+        success: false,
+      });
       return;
     }
 
@@ -2533,7 +3380,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
 
     task.status = 'completed';
     task.progress_percent = 100;
-    task.result_payload = body.result_payload || {};
+    task.result_payload = body.result_payload;
     task.lease_expires_at = undefined;
     task.completed_at = now;
     task.updated_at = now;
@@ -2595,11 +3442,24 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         : 'Inference execution failed'
     );
 
-    task.status = 'failed';
-    task.error_message = errorMessage;
-    task.lease_expires_at = undefined;
-    task.completed_at = now;
-    task.updated_at = now;
+    const maxRetries = task.max_retries ?? 2;
+    const attempts = task.attempt_count ?? 1;
+    const shouldRetry = Boolean(body.retryable) && attempts <= maxRetries;
+
+    if (shouldRetry) {
+      task.status = 'queued';
+      task.error_message = `[Retry ${attempts}/${maxRetries}]: ${errorMessage}`;
+      task.claimed_by_worker = undefined;
+      task.lease_expires_at = undefined;
+      task.progress_percent = 0;
+      task.updated_at = now;
+    } else {
+      task.status = 'failed';
+      task.error_message = errorMessage;
+      task.lease_expires_at = undefined;
+      task.completed_at = now;
+      task.updated_at = now;
+    }
 
     const worker = auth.worker;
     worker.status = 'online';
@@ -2609,14 +3469,18 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     worker.updated_at = now;
 
     addLog({
-      action: 'task_failed_by_worker',
+      action: shouldRetry ? 'task_requeued_for_retry' : 'task_failed_by_worker',
       category: 'task',
       task_id: taskId,
       task_title: task.title,
-      details: { worker_id: worker.id, error: errorMessage },
+      details: { worker_id: worker.id, error: errorMessage, retried: shouldRetry },
     });
 
-    res.json({ success: true, message: 'Task marked failed' });
+    res.json({
+      success: true,
+      retried: shouldRetry,
+      message: shouldRetry ? 'Task re-queued for retry' : 'Task marked failed',
+    });
   });
 
   // 7l. Worker revocation & single-worker public lookup
@@ -2712,6 +3576,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       message_count: 0,
     };
     conversations.unshift(created);
+    savePersistedState();
     res.status(201).json({ success: true, conversation: created });
   });
 
@@ -2730,6 +3595,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     const convId = String(req.params.id);
     conversations = conversations.filter((c) => c.id !== convId);
     messages = messages.filter((m) => m.conversation_id !== convId);
+    savePersistedState();
     res.json({ success: true, message: 'Conversation deleted' });
   });
 
@@ -2767,6 +3633,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       conv.last_message = body.content.slice(0, 100);
       conv.message_count = (conv.message_count || 0) + 1;
     }
+    savePersistedState();
 
     res.status(201).json({ success: true, message: createdMsg });
   });
@@ -2797,7 +3664,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       conversations.unshift(newConv);
     }
 
-    // 1. Record user message
     const userMsg: Message = {
       id: generateSecureId('msg'),
       conversation_id: convId,
@@ -2809,13 +3675,11 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     };
     messages.push(userMsg);
 
-    // 2. Identify target model & check active compute workers
     const agent = body.agent_id ? agents.find((a) => a.id === body.agent_id) : undefined;
     const targetModel = body.model || agent?.model || 'qwen-2.5-coder-14b';
     const activeWorkers = workers.filter((w) => w.status === 'online' || w.status === 'busy');
 
     if (activeWorkers.length === 0) {
-      // Honest offline response: never invent fake responses
       const errorText = `Inference Unavailable: No active compute workers are currently connected to execute model '${targetModel}'. Connect a Kaggle GPU worker node (dual Tesla T4) via the Compute Grid to execute local inference.`;
       const agentMsg: Message = {
         id: generateSecureId('msg'),
@@ -2833,6 +3697,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
         conv.last_message = errorText.slice(0, 100);
         conv.message_count = (conv.message_count || 0) + 2;
       }
+      savePersistedState();
 
       res.status(503).json({
         success: false,
@@ -2845,7 +3710,6 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       return;
     }
 
-    // 3. Active worker online: dispatch real inference task to queue
     const taskId = generateSecureId('tsk');
     const createdTask: Task = {
       id: taskId,
@@ -2890,6 +3754,7 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
       conv.last_message = body.message.trim().slice(0, 100);
       conv.message_count = (conv.message_count || 0) + 1;
     }
+    savePersistedState();
 
     res.json({
       success: true,
@@ -2905,22 +3770,23 @@ export async function createAetherApp(options: { disableVite?: boolean } = {}) {
     tasks = createInitialTasks();
     approvals = createInitialApprovals();
     filesMap = createInitialFiles();
+    fileMetadataList = [];
     initialWorkerState = createInitialWorkers();
     workers = initialWorkerState.workers;
     workerAuthMap = initialWorkerState.authMap;
     workerNonceMap.clear();
+    rateLimitMap.clear();
     logs = createInitialLogs();
     conversations = [];
     messages = [];
+    savePersistedState();
     res.json({ success: true, message: 'Platform state reset to defaults' });
   });
 
-  // Catch-all for unknown /api/* endpoints
   app.all('/api/*', (req: Request, res: Response) => {
     res.status(404).json({ error: `Endpoint not found: ${req.path}`, success: false });
   });
 
-  // Frontend serving: Vite middleware in development, static dist/ in production
   if (!options.disableVite) {
     const distDir = path.resolve(__dirname, 'dist');
     const useProdStatic = process.env.NODE_ENV === 'production' && fs.existsSync(distDir);

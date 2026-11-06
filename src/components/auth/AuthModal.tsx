@@ -111,17 +111,23 @@ export const AuthModal: React.FC = () => {
 
       const ch = regRes.challenge;
 
+      const rpName = ch.rp?.name || 'AetherOS Platform';
+      const rpId = window.location.hostname === 'localhost' ? 'localhost' : (ch.rp?.id || ch.rpId || window.location.hostname);
+      const userId = ch.user?.id || regRes.user_id || 'usr_anonymous';
+      const userName = ch.user?.name || email.trim();
+      const userDisplayName = ch.user?.displayName || name.trim();
+
       // 2. Browser Native WebAuthn Passkey Registration
       const publicKeyCredentialCreationOptions: PublicKeyCredentialCreationOptions = {
         challenge: base64UrlToBuffer(ch.challenge),
         rp: {
-          name: ch.rp.name,
-          id: window.location.hostname === 'localhost' ? 'localhost' : (ch.rp.id || window.location.hostname),
+          name: rpName,
+          id: rpId,
         },
         user: {
-          id: base64UrlToBuffer(ch.user.id),
-          name: ch.user.name,
-          displayName: ch.user.displayName,
+          id: base64UrlToBuffer(userId),
+          name: userName,
+          displayName: userDisplayName,
         },
         pubKeyCredParams: [
           { alg: -7, type: 'public-key' },  // ES256
@@ -148,6 +154,7 @@ export const AuthModal: React.FC = () => {
       // 3. Complete Verification on Server
       const verifyRes = await apiClient.verifyWebAuthnRegister({
         challenge_id: ch.id,
+        user_id: regRes.user.id,
         credential: {
           id: credential.id,
           rawId: bufferToBase64Url(credential.rawId),

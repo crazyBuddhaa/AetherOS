@@ -30,10 +30,18 @@ import {
   generateTotpCode,
   verifyTotpCode,
   verifyWebAuthnChallenge,
+  verifyWebAuthnRegistrationCredential,
+  parseAndVerifyAuthenticatorData,
   verifyWebAuthnAssertionSignature,
+  extractSessionTokenFromRequest,
+  buildSessionCookieHeader,
+  buildClearSessionCookieHeader,
+  SECURITY_RESPONSE_HEADERS,
 } from './auth.ts';
+import { runDefensiveSecurityAssessment } from './cybersecurity.ts';
 
 const VALID_PROVIDERS = new Set(['kaggle', 'oracle', 'runpod', 'self_hosted', 'custom']);
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB limit
 
 async function parseJsonBody(request: Request): Promise<{ ok: true; body: any } | { ok: false; error: string }> {
   try {
@@ -153,12 +161,18 @@ async function authenticateWorker(
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const isSecure = url.protocol === 'https:';
+    const clientIp =
+      request.headers.get('cf-connecting-ip') ||
+      request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
+      'local';
 
     const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Origin': request.headers.get('Origin') || '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
       'Access-Control-Allow-Headers':
         'Content-Type, Authorization, X-Requested-With, X-Worker-Id, X-Worker-Timestamp, X-Worker-Nonce, Idempotency-Key, X-Registration-Token',
+      ...SECURITY_RESPONSE_HEADERS,
     };
 
     if (request.method === 'OPTIONS') {
@@ -233,7 +247,7 @@ export default {
           const inferenceStatus = activeWorkers.length > 0 ? 'available' : 'unavailable';
 
           return json({
-            status: 'online',
+            status: d1Connected && r2Connected ? 'online' : 'degraded',
             environment: env.ENVIRONMENT || 'production',
             timestamp: new Date().toISOString(),
             d1_connected: d1Connected,
@@ -242,7 +256,7 @@ export default {
             r2_status: r2Status,
             d1_error: d1Error,
             r2_error: r2Error,
-            worker_status: 'healthy',
+            worker_status: d1Connected ? 'healthy' : 'degraded',
             compute_status: computeStatus,
             inference_status: inferenceStatus,
             active_worker_count: activeWorkers.length,
@@ -252,7 +266,6 @@ export default {
         }
 
         if (url.pathname === '/api/runtime/heartbeat') {
-          // Check actual active compute worker first (Kaggle primary)
           const allWorkers = await db.getComputeWorkers();
           const activeWorker = allWorkers.find(
             w => w.status === 'online' || w.status === 'busy'
@@ -276,12 +289,13 @@ export default {
                 gpu_temperature_c: activeWorker.gpu_temperature_c,
                 uptime_seconds: activeWorker.uptime_seconds,
                 last_heartbeat: activeWorker.last_heartbeat,
+                loaded_models: activeWorker.loaded_models || [],
+                gpu_devices: activeWorker.gpu_devices || [],
                 engine_version: `${activeWorker.provider.toUpperCase()} (${activeWorker.gpu_count}× ${activeWorker.gpu_model})`,
               },
             });
           }
 
-          // Check optional external runtime if explicitly configured
           if (env.INFERENCE_RUNTIME_URL) {
             try {
               const heartbeat = await runtime.checkHeartbeat();
@@ -311,35 +325,32 @@ export default {
         // 1.5 Account Registration & Passwordless Auth API
         // ==========================================
 
-        const extractSessionToken = (req: Request): string | null => {
-          const auth = req.headers.get('Authorization');
-          if (auth && auth.startsWith('Bearer ')) {
-            const token = auth.slice(7).trim();
-            if (token && !token.startsWith('ak_')) return token;
-          }
-          const cookie = req.headers.get('Cookie');
-          if (cookie) {
-            const match = cookie.match(/aether_session=([a-zA-Z0-9_-]+)/);
-            if (match) return match[1];
-          }
-          return null;
-        };
-
         const getSessionUser = async (
           req: Request
         ): Promise<{ user: UserAccount; session: AuthSession } | null> => {
-          const token = extractSessionToken(req);
+          const token = extractSessionTokenFromRequest(req);
           if (!token) return null;
           const session = await db.getAuthSession(token);
           if (!session) return null;
           const user = await db.getUserById(session.user_id);
-          if (!user || user.status === 'suspended') return null;
+          if (!user || user.status === 'suspended' || user.status !== 'active') return null;
           await db.touchAuthSession(token);
           return { user, session };
         };
 
         // User Registration
         if (url.pathname === '/api/auth/register' && request.method === 'POST') {
+          const rateCheck = await db.checkRateLimit(`register:${clientIp}`, 20, 60_000);
+          if (!rateCheck.allowed) {
+            return json(
+              {
+                success: false,
+                error: `Too many registration requests. Please retry in ${rateCheck.retryAfterSeconds}s.`,
+              },
+              429
+            );
+          }
+
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
@@ -352,7 +363,7 @@ export default {
           }
 
           const normalizedEmail = normalizeEmail(body.email);
-          if (!normalizedEmail || !normalizedEmail.includes('@')) {
+          if (!normalizedEmail || !normalizedEmail.includes('@') || normalizedEmail.length > 254) {
             return errorResponse('Invalid email address format');
           }
 
@@ -368,7 +379,7 @@ export default {
           }
 
           const userId = generateSecureId('usr');
-          const newUser = await db.createUser({
+          await db.createUser({
             id: userId,
             email: normalizedEmail,
             name: String(body.name).trim(),
@@ -376,7 +387,6 @@ export default {
             status: 'pending_verification',
           });
 
-          // Generate WebAuthn passkey registration challenge
           const challengeToken = generateSecureToken(32);
           const challengeId = generateSecureId('chg');
           const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -402,43 +412,51 @@ export default {
             event_type: 'account_registration_initiated',
             severity: 'info',
             details: { email: normalizedEmail, org_name: body.organization_name || null },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
-          return json({
-            success: true,
-            user_id: userId,
-            challenge_id: challengeId,
-            options: {
-              challenge: challengeToken,
-              rp: { name: 'AetherOS Platform', id: rpId },
-              user: {
-                id: userId,
-                name: normalizedEmail,
-                displayName: body.name.trim(),
+          return json(
+            {
+              success: true,
+              user_id: userId,
+              challenge_id: challengeId,
+              options: {
+                challenge: challengeToken,
+                rp: { name: 'AetherOS Platform', id: rpId },
+                user: {
+                  id: userId,
+                  name: normalizedEmail,
+                  displayName: String(body.name).trim(),
+                },
+                pubKeyCredParams: [
+                  { alg: -7, type: 'public-key' },
+                  { alg: -257, type: 'public-key' },
+                ],
+                authenticatorSelection: {
+                  userVerification: 'preferred',
+                  residentKey: 'preferred',
+                },
+                timeout: 60000,
               },
-              pubKeyCredParams: [
-                { alg: -7, type: 'public-key' },
-                { alg: -257, type: 'public-key' },
-              ],
-              authenticatorSelection: {
-                userVerification: 'preferred',
-                residentKey: 'preferred',
-              },
-              timeout: 60000,
             },
-          }, 201);
+            201
+          );
         }
 
         // Complete Passkey Registration & Activate Account
         if (url.pathname === '/api/auth/webauthn/register-verify' && request.method === 'POST') {
+          const rateCheck = await db.checkRateLimit(`reg_verify:${clientIp}`, 25, 60_000);
+          if (!rateCheck.allowed) {
+            return errorResponse(`Rate limit exceeded. Retry in ${rateCheck.retryAfterSeconds}s.`, 429);
+          }
+
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
 
           if (!body.challenge_id || !body.user_id || !body.credential?.id) {
-            return errorResponse('Missing required registration verification fields');
+            return errorResponse('Missing required registration verification fields', 400);
           }
 
           const challenge = await db.getAuthChallenge(body.challenge_id);
@@ -446,56 +464,91 @@ export default {
             return errorResponse('Registration challenge expired or invalid. Please retry registration.', 400);
           }
 
+          if (challenge.purpose !== 'registration' && challenge.purpose !== 'passkey_enrollment') {
+            return errorResponse('Invalid challenge purpose for passkey registration', 400);
+          }
+
+          if (challenge.user_id !== body.user_id) {
+            await db.incrementChallengeFailedAttempts(challenge.id);
+            await db.logSecurityEvent({
+              id: generateSecureId('sec'),
+              user_id: body.user_id,
+              event_type: 'passkey_registration_challenge_hijack_blocked',
+              severity: 'critical',
+              details: { challenge_id: challenge.id, expected_user: challenge.user_id, provided_user: body.user_id },
+              ip_address: clientIp,
+              created_at: new Date().toISOString(),
+            });
+            return errorResponse('Challenge ownership mismatch', 403);
+          }
+
+          if (challenge.failed_attempts >= 4) {
+            return errorResponse('Registration challenge locked due to repeated verification failures', 429);
+          }
+
           const user = await db.getUserById(body.user_id);
           if (!user) return errorResponse('User account not found', 404);
 
-          // Verify WebAuthn clientDataJSON
-          if (body.credential.response?.clientDataJSON) {
-            const cdCheck = verifyWebAuthnChallenge(
-              body.credential.response.clientDataJSON,
-              challenge.challenge,
-              url.origin,
-              'webauthn.create'
+          // Strict WebAuthn registration credential & attestation verification
+          const verification = await verifyWebAuthnRegistrationCredential(
+            body.credential,
+            challenge.challenge,
+            challenge.origin || url.origin,
+            challenge.rp_id || url.hostname
+          );
+
+          if (!verification.ok) {
+            const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
+            await db.logSecurityEvent({
+              id: generateSecureId('sec'),
+              user_id: user.id,
+              event_type: 'passkey_registration_verification_failed',
+              severity: 'warning',
+              details: { reason: verification.error, attempts },
+              ip_address: clientIp,
+              created_at: new Date().toISOString(),
+            });
+            return errorResponse(
+              verification.error || 'WebAuthn passkey registration verification failed',
+              verification.status || 400
             );
-            if (!cdCheck.ok) {
-              return errorResponse(cdCheck.error || 'WebAuthn client data verification failed', 400);
-            }
           }
 
-          const credentialId = String(body.credential.id);
-          const publicKey = String(body.credential.public_key || body.credential.rawId || credentialId);
-
           await db.createPasskey({
-            id: credentialId,
+            id: verification.credentialId,
             user_id: user.id,
-            public_key: publicKey,
-            algorithm: -7,
-            sign_count: 0,
+            public_key: verification.publicKeySpkiB64Url,
+            algorithm: verification.algorithm,
+            sign_count: verification.signCount,
             device_name: String(body.credential.device_name || 'Primary Passkey Authenticator'),
-            transports: body.credential.transports || ['internal', 'hybrid'],
+            transports: Array.isArray(body.credential.transports)
+              ? body.credential.transports
+              : ['internal', 'hybrid'],
             created_at: new Date().toISOString(),
           });
 
-          // Activate user account
-          await db.createUser({
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            role: user.role,
-            status: 'active',
-          });
+          // Activate user account only after verified WebAuthn credential
+          const activatedUser = (await db.activateUserAccount(user.id)) || {
+            ...user,
+            status: 'active' as const,
+            is_active: true,
+          };
 
-          // Create default personal workspace
-          const orgId = generateSecureId('org');
-          const workspace = await db.createOrganization({
-            id: orgId,
-            name: `${user.name}'s Workspace`,
-            slug: `ws-${user.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase()}`,
-            owner_id: user.id,
-            is_personal: true,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          });
+          // Ensure personal workspace exists
+          let existingOrgs = await db.getOrganizationsForUser(user.id);
+          let workspace = existingOrgs[0];
+          if (!workspace) {
+            const orgId = generateSecureId('org');
+            workspace = await db.createOrganization({
+              id: orgId,
+              name: `${user.name}'s Workspace`,
+              slug: `ws-${user.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toLowerCase()}`,
+              owner_id: user.id,
+              is_personal: true,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            });
+          }
 
           // Issue authenticated session
           const sessionToken = generateSecureToken(32);
@@ -503,8 +556,8 @@ export default {
           await db.createAuthSession({
             id: sessionToken,
             user_id: user.id,
-            organization_id: orgId,
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            organization_id: workspace.id,
+            ip_address: clientIp,
             user_agent: request.headers.get('user-agent') || undefined,
             is_revoked: false,
             last_active_at: new Date().toISOString(),
@@ -519,8 +572,8 @@ export default {
             user_id: user.id,
             event_type: 'passkey_registered_account_activated',
             severity: 'info',
-            details: { credential_id: credentialId },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            details: { credential_id: verification.credentialId },
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
@@ -529,18 +582,68 @@ export default {
               success: true,
               message: 'Account successfully activated and passkey enrolled',
               session_token: sessionToken,
-              user: { ...user, status: 'active' },
+              user: { ...activatedUser, status: 'active', is_active: true },
               workspace,
             },
             201,
             {
-              'Set-Cookie': `aether_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+              'Set-Cookie': buildSessionCookieHeader(sessionToken, isSecure),
             }
           );
         }
 
+        // Enroll Additional Passkey Challenge (Authenticated)
+        if (url.pathname === '/api/auth/passkeys/enroll-challenge' && request.method === 'POST') {
+          const auth = await getSessionUser(request);
+          if (!auth) return errorResponse('Authentication required to enroll a new passkey', 401);
+
+          const challengeToken = generateSecureToken(32);
+          const challengeId = generateSecureId('chg');
+          const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+          const rpId = url.hostname;
+
+          await db.createAuthChallenge({
+            id: challengeId,
+            challenge: challengeToken,
+            purpose: 'passkey_enrollment',
+            user_id: auth.user.id,
+            email: auth.user.email,
+            origin: url.origin,
+            rp_id: rpId,
+            failed_attempts: 0,
+            is_used: false,
+            expires_at: expiresAt,
+            created_at: new Date().toISOString(),
+          });
+
+          return json({
+            success: true,
+            user_id: auth.user.id,
+            challenge_id: challengeId,
+            options: {
+              challenge: challengeToken,
+              rp: { name: 'AetherOS Platform', id: rpId },
+              user: {
+                id: auth.user.id,
+                name: auth.user.email,
+                displayName: auth.user.name,
+              },
+              pubKeyCredParams: [
+                { alg: -7, type: 'public-key' },
+                { alg: -257, type: 'public-key' },
+              ],
+              timeout: 60000,
+            },
+          });
+        }
+
         // Login Challenge (Passkey or TOTP)
         if (url.pathname === '/api/auth/login/challenge' && request.method === 'POST') {
+          const rateCheck = await db.checkRateLimit(`login_challenge:${clientIp}`, 30, 60_000);
+          if (!rateCheck.allowed) {
+            return errorResponse(`Too many login requests. Retry in ${rateCheck.retryAfterSeconds}s.`, 429);
+          }
+
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
@@ -554,6 +657,9 @@ export default {
           }
           if (user.status === 'suspended') {
             return errorResponse('Account has been suspended for security review', 403);
+          }
+          if (user.status !== 'active') {
+            return errorResponse('Account registration is incomplete. Please complete passkey verification first.', 403);
           }
 
           const passkeys = await db.getPasskeysForUser(user.id);
@@ -595,17 +701,27 @@ export default {
 
         // Passkey Login Verification
         if (url.pathname === '/api/auth/login/passkey' && request.method === 'POST') {
+          const rateCheck = await db.checkRateLimit(`login_passkey:${clientIp}`, 25, 60_000);
+          if (!rateCheck.allowed) {
+            return errorResponse(`Too many login attempts. Retry in ${rateCheck.retryAfterSeconds}s.`, 429);
+          }
+
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
 
-          if (!body.challenge_id || !body.credential_id) {
-            return errorResponse('Missing challenge_id or credential_id');
+          const credentialId = body.credential_id || body.credential?.id;
+          if (!body.challenge_id || !credentialId) {
+            return errorResponse('Missing challenge_id or credential_id', 400);
           }
 
           const challenge = await db.getAuthChallenge(body.challenge_id);
           if (!challenge || challenge.is_used || new Date(challenge.expires_at).getTime() < Date.now()) {
             return errorResponse('Authentication challenge invalid or expired. Please request a fresh challenge.', 400);
+          }
+
+          if (challenge.purpose !== 'login') {
+            return errorResponse('Invalid challenge purpose for passkey login', 400);
           }
 
           // Enforce 4-attempt failed attempt limit
@@ -616,7 +732,7 @@ export default {
               event_type: 'passkey_login_lockout_exceeded',
               severity: 'critical',
               details: { challenge_id: challenge.id, attempts: challenge.failed_attempts },
-              ip_address: request.headers.get('cf-connecting-ip') || undefined,
+              ip_address: clientIp,
               created_at: new Date().toISOString(),
             });
             return json(
@@ -629,8 +745,8 @@ export default {
             );
           }
 
-          const passkey = await db.getPasskeyById(body.credential_id);
-          if (!passkey) {
+          const passkey = await db.getPasskeyById(String(credentialId));
+          if (!passkey || (challenge.user_id && passkey.user_id !== challenge.user_id)) {
             const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
             return json(
               {
@@ -642,35 +758,96 @@ export default {
             );
           }
 
-          // Validate WebAuthn clientDataJSON
-          if (body.clientDataJSON) {
-            const cdCheck = verifyWebAuthnChallenge(
-              body.clientDataJSON,
-              challenge.challenge,
-              url.origin,
-              'webauthn.get'
+          // Require and validate WebAuthn clientDataJSON
+          const clientDataJSON = body.clientDataJSON || body.credential?.response?.clientDataJSON;
+          if (!clientDataJSON || typeof clientDataJSON !== 'string') {
+            const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
+            return json(
+              {
+                success: false,
+                error: `Missing WebAuthn clientDataJSON assertion. Attempt ${attempts}/4`,
+                remaining_attempts: Math.max(0, 4 - attempts),
+              },
+              400
             );
-            if (!cdCheck.ok) {
+          }
+
+          const cdCheck = verifyWebAuthnChallenge(
+            clientDataJSON,
+            challenge.challenge,
+            challenge.origin || url.origin,
+            'webauthn.get'
+          );
+          if (!cdCheck.ok) {
+            const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
+            return json(
+              {
+                success: false,
+                error: `${cdCheck.error || 'Challenge mismatch'}. Attempt ${attempts}/4`,
+                remaining_attempts: Math.max(0, 4 - attempts),
+              },
+              401
+            );
+          }
+
+          // Validate authenticatorData & signature counter replay protection when provided
+          const authenticatorData = body.authenticatorData || body.credential?.response?.authenticatorData;
+          const signature = body.signature || body.credential?.response?.signature;
+          let nextSignCount = passkey.sign_count + 1;
+
+          if (authenticatorData && typeof authenticatorData === 'string') {
+            const parsedAuth = await parseAndVerifyAuthenticatorData(
+              authenticatorData,
+              challenge.rp_id || url.hostname,
+              true
+            );
+            if (!parsedAuth.ok) {
               const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
               return json(
                 {
                   success: false,
-                  error: `${cdCheck.error || 'Challenge mismatch'}. Attempt ${attempts}/4`,
+                  error: `${parsedAuth.error}. Attempt ${attempts}/4`,
                   remaining_attempts: Math.max(0, 4 - attempts),
                 },
                 401
               );
             }
+            if (passkey.sign_count > 0 && parsedAuth.signCount > 0 && parsedAuth.signCount <= passkey.sign_count) {
+              await db.incrementChallengeFailedAttempts(challenge.id);
+              await db.logSecurityEvent({
+                id: generateSecureId('sec'),
+                user_id: passkey.user_id,
+                event_type: 'passkey_cloned_authenticator_detected',
+                severity: 'critical',
+                details: {
+                  credential_id: passkey.id,
+                  stored_sign_count: passkey.sign_count,
+                  received_sign_count: parsedAuth.signCount,
+                },
+                ip_address: clientIp,
+                created_at: new Date().toISOString(),
+              });
+              return json(
+                {
+                  success: false,
+                  error: 'Credential replay detected: authenticator signature counter did not advance',
+                },
+                401
+              );
+            }
+            if (parsedAuth.signCount > passkey.sign_count) {
+              nextSignCount = parsedAuth.signCount;
+            }
           }
 
-          // Verify signature if authenticatorData & signature provided
-          if (body.authenticatorData && body.signature && body.clientDataJSON) {
+          // Verify cryptographic assertion signature when authenticatorData & signature are provided
+          if (authenticatorData && signature) {
             const sigOk = await verifyWebAuthnAssertionSignature(
               passkey.public_key,
               passkey.algorithm,
-              body.authenticatorData,
-              body.clientDataJSON,
-              body.signature
+              authenticatorData,
+              clientDataJSON,
+              signature
             );
             if (!sigOk) {
               const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
@@ -685,12 +862,14 @@ export default {
             }
           }
 
-          // Success: update sign count and mark challenge used
-          await db.updatePasskeyUsage(passkey.id, passkey.sign_count + 1);
-          await db.markChallengeUsed(challenge.id);
-
           const user = await db.getUserById(passkey.user_id);
-          if (!user) return errorResponse('User account not found', 404);
+          if (!user || user.status !== 'active') {
+            return errorResponse('User account is not active', 403);
+          }
+
+          // Success: update sign count and mark challenge used
+          await db.updatePasskeyUsage(passkey.id, nextSignCount);
+          await db.markChallengeUsed(challenge.id);
 
           const workspaces = await db.getOrganizationsForUser(user.id);
           const activeWorkspace = workspaces[0];
@@ -701,7 +880,7 @@ export default {
             id: sessionToken,
             user_id: user.id,
             organization_id: activeWorkspace?.id,
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             user_agent: request.headers.get('user-agent') || undefined,
             is_revoked: false,
             last_active_at: new Date().toISOString(),
@@ -714,8 +893,8 @@ export default {
             user_id: user.id,
             event_type: 'passkey_login_success',
             severity: 'info',
-            details: { credential_id: passkey.id },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            details: { credential_id: passkey.id, sign_count: nextSignCount },
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
@@ -723,18 +902,23 @@ export default {
             {
               success: true,
               session_token: sessionToken,
-              user,
+              user: { ...user, is_active: true },
               workspace: activeWorkspace,
             },
             200,
             {
-              'Set-Cookie': `aether_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+              'Set-Cookie': buildSessionCookieHeader(sessionToken, isSecure),
             }
           );
         }
 
         // TOTP Login Verification
         if (url.pathname === '/api/auth/login/totp' && request.method === 'POST') {
+          const rateCheck = await db.checkRateLimit(`login_totp:${clientIp}`, 20, 60_000);
+          if (!rateCheck.allowed) {
+            return errorResponse(`Too many TOTP attempts. Retry in ${rateCheck.retryAfterSeconds}s.`, 429);
+          }
+
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
@@ -767,7 +951,7 @@ export default {
           }
 
           const secret = await decryptSecret(totp.encrypted_secret, totp.secret_iv);
-          const verifyOutcome = await verifyTotpCode(secret, String(body.code), totp.last_verified_counter);
+          const verifyOutcome = await verifyTotpCode(secret || '', String(body.code), totp.last_verified_counter);
 
           if (!verifyOutcome.valid) {
             const attempts = await db.incrementChallengeFailedAttempts(challenge.id);
@@ -781,11 +965,11 @@ export default {
             );
           }
 
+          const user = await db.getUserById(challenge.user_id);
+          if (!user || user.status !== 'active') return errorResponse('User account is not active', 403);
+
           await db.updateTotpCounter(challenge.user_id, verifyOutcome.counter);
           await db.markChallengeUsed(challenge.id);
-
-          const user = await db.getUserById(challenge.user_id);
-          if (!user) return errorResponse('User account not found', 404);
 
           const workspaces = await db.getOrganizationsForUser(user.id);
           const sessionToken = generateSecureToken(32);
@@ -795,7 +979,7 @@ export default {
             id: sessionToken,
             user_id: user.id,
             organization_id: workspaces[0]?.id,
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             user_agent: request.headers.get('user-agent') || undefined,
             is_revoked: false,
             last_active_at: new Date().toISOString(),
@@ -807,12 +991,12 @@ export default {
             {
               success: true,
               session_token: sessionToken,
-              user,
+              user: { ...user, is_active: true },
               workspace: workspaces[0],
             },
             200,
             {
-              'Set-Cookie': `aether_session=${sessionToken}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000`,
+              'Set-Cookie': buildSessionCookieHeader(sessionToken, isSecure),
             }
           );
         }
@@ -869,7 +1053,7 @@ export default {
             event_type: 'totp_enrolled',
             severity: 'info',
             details: { label: 'Authenticator App' },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
@@ -887,21 +1071,34 @@ export default {
           const passkeys = await db.getPasskeysForUser(auth.user.id);
           const totp = await db.getTotpForUser(auth.user.id);
           const ownedWorkers = await db.getOwnedWorkers(auth.user.id);
+          const sanitizedPasskeys = passkeys.map(p => ({
+            id: p.id,
+            device_name: p.device_name,
+            transports: p.transports,
+            sign_count: p.sign_count,
+            created_at: p.created_at,
+            last_used_at: p.last_used_at,
+          }));
 
           return json({
             authenticated: true,
-            user: auth.user,
+            user: { ...auth.user, is_active: auth.user.status === 'active' },
             workspace: workspaces[0] || null,
+            active_workspace: workspaces[0] || null,
+            current_organization: workspaces[0] || null,
             workspaces,
+            organizations: workspaces,
+            passkeys: sanitizedPasskeys,
             passkeys_count: passkeys.length,
             has_totp: Boolean(totp && totp.is_active),
+            totp_enabled: Boolean(totp && totp.is_active),
             owned_workers: ownedWorkers,
           });
         }
 
         // Logout & Session Revocation
         if (url.pathname === '/api/auth/logout' && request.method === 'POST') {
-          const token = extractSessionToken(request);
+          const token = extractSessionTokenFromRequest(request);
           if (token) {
             await db.revokeAuthSession(token);
           }
@@ -909,7 +1106,7 @@ export default {
             { success: true, message: 'Successfully signed out' },
             200,
             {
-              'Set-Cookie': 'aether_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+              'Set-Cookie': buildClearSessionCookieHeader(isSecure),
             }
           );
         }
@@ -960,10 +1157,11 @@ export default {
           const body = parsed.body;
           if (!body.name) return errorResponse('Workspace name is required');
 
-          const slug = String(body.name)
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-|-$/g, '') || `ws-${Date.now()}`;
+          const slug =
+            String(body.name)
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-')
+              .replace(/^-|-$/g, '') || `ws-${Date.now()}`;
 
           const newOrg = await db.createOrganization({
             id: generateSecureId('org'),
@@ -1006,7 +1204,7 @@ export default {
             event_type: 'worker_claimed',
             severity: 'info',
             details: { worker_id: workerId, worker_name: worker.name },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
@@ -1021,9 +1219,13 @@ export default {
 
         if (url.pathname === '/api/workers/ownership' && request.method === 'GET') {
           const auth = await getSessionUser(request);
-          if (!auth) return errorResponse('Unauthorized', 401);
-          const owned = await db.getOwnedWorkers(auth.user.id);
-          return json({ success: true, workers: owned });
+          const ownerships = await db.getAllWorkerOwnerships();
+          const owned = auth ? await db.getOwnedWorkers(auth.user.id) : [];
+          return json({
+            success: true,
+            ownerships,
+            workers: owned,
+          });
         }
 
         // ==========================================
@@ -1046,7 +1248,6 @@ export default {
           const notebookSlug = body.notebook_slug || 'crazybuddhaa/aetheros-kaggle-worker';
           const sessionId = generateSecureId('sess');
 
-          // Check for active or registered Kaggle worker
           const allWorkers = await db.getComputeWorkers();
           const targetWorker =
             allWorkers.find(w => w.id === 'wrk_kaggle_464cc6bdb46da70260a1e849') ||
@@ -1056,7 +1257,6 @@ export default {
           let kernelSessionId: string | undefined = undefined;
           let logsSnippet: string | undefined = undefined;
 
-          // Check if Kaggle API credentials exist for remote push
           const kaggleCreds = auth ? await db.getKaggleCredentials(auth.user.id) : null;
           if (kaggleCreds) {
             try {
@@ -1097,7 +1297,6 @@ export default {
               initialStatus = 'waiting_for_worker';
             }
           } else {
-            // If worker already connected and healthy, transition directly to ready
             if (targetWorker && (targetWorker.status === 'online' || targetWorker.status === 'busy')) {
               initialStatus = 'ready';
               logsSnippet = `Worker '${targetWorker.name}' is already connected and active on dual T4 GPUs.`;
@@ -1125,11 +1324,14 @@ export default {
 
           await db.createComputeSession(sessionRecord);
 
-          return json({
-            success: true,
-            session: sessionRecord,
-            message: `Kaggle compute session initiated with state '${initialStatus}'`,
-          }, 201);
+          return json(
+            {
+              success: true,
+              session: sessionRecord,
+              message: `Kaggle compute session initiated with state '${initialStatus}'`,
+            },
+            201
+          );
         }
 
         const sessionActionMatch = url.pathname.match(/^\/api\/compute\/sessions\/([^/]+)\/(stop|restart|status)$/);
@@ -1140,17 +1342,16 @@ export default {
           if (!session) return errorResponse(`Compute session '${sessionId}' not found`, 404);
 
           if (action === 'status') {
-            // Check worker status in AetherOS compute_workers
             const allWorkers = await db.getComputeWorkers();
-            const worker = allWorkers.find(w => w.id === session.worker_id) || allWorkers.find(w => w.provider === 'kaggle');
+            const worker =
+              allWorkers.find(w => w.id === session.worker_id) ||
+              allWorkers.find(w => w.provider === 'kaggle');
 
-            // Also check Kaggle API if credentials available
             let kaggleCloudStatus: string = 'unknown';
             if (session.kernel_session_id) {
               kaggleCloudStatus = 'running';
             }
 
-            // Sync state machine
             let updatedStatus = session.status;
             if (worker && (worker.status === 'online' || worker.status === 'busy')) {
               updatedStatus = worker.status === 'busy' ? 'busy' : 'ready';
@@ -1167,20 +1368,24 @@ export default {
               success: true,
               session: {
                 ...session,
-                worker: worker ? {
-                  id: worker.id,
-                  name: worker.name,
-                  status: worker.status,
-                  gpu_model: worker.gpu_model,
-                  gpu_count: worker.gpu_count,
-                  vram_mb: worker.vram_mb,
-                  gpu_utilization_percent: worker.gpu_utilization_percent,
-                  gpu_temperature_c: worker.gpu_temperature_c,
-                  gpu_memory_used_mb: worker.gpu_memory_used_mb,
-                  last_heartbeat: worker.last_heartbeat,
-                  uptime_seconds: worker.uptime_seconds,
-                  current_task_id: worker.current_task_id,
-                } : null,
+                worker: worker
+                  ? {
+                      id: worker.id,
+                      name: worker.name,
+                      status: worker.status,
+                      gpu_model: worker.gpu_model,
+                      gpu_count: worker.gpu_count,
+                      vram_mb: worker.vram_mb,
+                      gpu_utilization_percent: worker.gpu_utilization_percent,
+                      gpu_temperature_c: worker.gpu_temperature_c,
+                      gpu_memory_used_mb: worker.gpu_memory_used_mb,
+                      last_heartbeat: worker.last_heartbeat,
+                      uptime_seconds: worker.uptime_seconds,
+                      current_task_id: worker.current_task_id,
+                      loaded_models: worker.loaded_models,
+                      gpu_devices: worker.gpu_devices,
+                    }
+                  : null,
                 kaggle_cloud_status: kaggleCloudStatus,
               },
             });
@@ -1251,7 +1456,7 @@ export default {
             event_type: 'kaggle_credentials_configured',
             severity: 'info',
             details: { kaggle_username: String(body.kaggle_username).trim() },
-            ip_address: request.headers.get('cf-connecting-ip') || undefined,
+            ip_address: clientIp,
             created_at: new Date().toISOString(),
           });
 
@@ -1276,6 +1481,106 @@ export default {
             kaggle_username: creds.kaggle_username,
             last_updated: creds.updated_at,
           });
+        }
+
+        // ==========================================
+        // 1.7 Cybersecurity Defensive Assessment API (Phase 10)
+        // ==========================================
+        if (url.pathname === '/api/security/assess' && request.method === 'POST') {
+          const auth = await getSessionUser(request);
+          const parsed = await parseJsonBody(request);
+          if (!parsed.ok) return errorResponse(parsed.error, 400);
+          const body = parsed.body;
+
+          const outcome = await runDefensiveSecurityAssessment({
+            scope: body.scope || body.operation || 'full_audit',
+            target_url: body.target_url,
+            domain: body.domain,
+            package_json: body.package_json,
+            source_code: body.source_code,
+            source_filename: body.source_filename || body.code_filename,
+            authorization_confirmed: Boolean(body.authorization_confirmed),
+            authorized_scope_note: body.authorized_scope_note,
+          });
+
+          if (!outcome.ok) {
+            await db.logSecurityEvent({
+              id: generateSecureId('sec'),
+              user_id: auth?.user?.id,
+              event_type: 'cybersec_assessment_rejected',
+              severity: 'warning',
+              details: { reason: outcome.error, target_url: body.target_url || null },
+              ip_address: clientIp,
+              created_at: new Date().toISOString(),
+            });
+            return errorResponse(outcome.error, outcome.status);
+          }
+
+          const report = outcome.report;
+          const mdKey = `reports/security/${report.report_id}.md`;
+          const jsonKey = `reports/security/${report.report_id}.json`;
+          let reportFileId: string | undefined;
+
+          try {
+            const mdBytes = new TextEncoder().encode(report.markdown_report).buffer;
+            const r2Md = await r2.uploadFile(mdKey, mdBytes, {
+              contentType: 'text/markdown',
+              customMetadata: {
+                report_id: report.report_id,
+                scope: report.scope,
+                target: report.target,
+              },
+            });
+            reportFileId = generateSecureId('file');
+            await db.recordFileMetadata({
+              id: reportFileId,
+              r2_key: r2Md.key,
+              filename: `${report.report_id}.md`,
+              mime_type: 'text/markdown',
+              size_bytes: r2Md.size,
+              etag: r2Md.etag,
+              uploaded_by: auth?.user?.id || 'usr_admin',
+              storage_class: 'Standard',
+            });
+
+            const jsonBytes = new TextEncoder().encode(JSON.stringify(report, null, 2)).buffer;
+            await r2.uploadFile(jsonKey, jsonBytes, {
+              contentType: 'application/json',
+              customMetadata: { report_id: report.report_id },
+            });
+          } catch {}
+
+          await db.logSecurityEvent({
+            id: generateSecureId('sec'),
+            user_id: auth?.user?.id,
+            event_type: 'cybersec_defensive_assessment_completed',
+            severity: report.summary.critical > 0 || report.summary.high > 0 ? 'warning' : 'info',
+            details: {
+              report_id: report.report_id,
+              target: report.target,
+              scope: report.scope,
+              summary: report.summary,
+              r2_report_key: mdKey,
+            },
+            ip_address: clientIp,
+            created_at: new Date().toISOString(),
+          });
+
+          return json({
+            success: true,
+            report,
+            assessment: report,
+            report_file_id: reportFileId,
+            artifacts: {
+              markdown_key: mdKey,
+              json_key: jsonKey,
+            },
+          });
+        }
+
+        if (url.pathname === '/api/security/events' && request.method === 'GET') {
+          const events = await db.getSecurityEvents(50);
+          return json({ success: true, events });
         }
 
         // 2. Agents API
@@ -1342,24 +1647,105 @@ export default {
         }
 
         if (url.pathname === '/api/tasks' && request.method === 'POST') {
+          const auth = await getSessionUser(request);
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
           if (!body.agent_id || !body.title) {
             return errorResponse('Missing required task fields: agent_id, title');
           }
+
+          const effectiveUserId = auth?.user?.id || body.user_id || 'usr_default';
+          const idempotencyKey =
+            (typeof body.idempotency_key === 'string' && body.idempotency_key.trim()) ||
+            request.headers.get('Idempotency-Key')?.trim() ||
+            undefined;
+
+          if (idempotencyKey) {
+            const existing = await db.getTaskByIdempotencyKey(effectiveUserId, idempotencyKey);
+            if (existing) {
+              return json({ success: true, task: existing, deduplicated: true }, 200);
+            }
+          }
+
           const taskId = generateSecureId('tsk');
-          const createdTask = await db.createTask({
+          const inputPayload = body.input_payload && typeof body.input_payload === 'object' ? body.input_payload : {};
+
+          let createdTask = await db.createTask({
             id: taskId,
             agent_id: body.agent_id,
-            user_id: body.user_id || 'usr_default',
-            title: body.title,
+            user_id: effectiveUserId,
+            workspace_id: body.workspace_id || auth?.session?.organization_id,
+            idempotency_key: idempotencyKey,
+            title: String(body.title).trim(),
             description: body.description || '',
-            input_payload: body.input_payload || {},
+            input_payload: inputPayload,
             priority: body.priority || 'medium',
             status: 'queued',
             progress_percent: 0,
+            max_retries: typeof body.max_retries === 'number' ? body.max_retries : 2,
+            timeout_seconds: typeof body.timeout_seconds === 'number' ? body.timeout_seconds : 300,
           });
+
+          // Native Defensive Cybersecurity Agent execution path
+          if (
+            body.agent_id === 'agent_cybersec' ||
+            inputPayload.task_type === 'cybersecurity_audit'
+          ) {
+            const secOutcome = await runDefensiveSecurityAssessment({
+              scope: inputPayload.scope || 'full_audit',
+              target_url: inputPayload.target_url,
+              domain: inputPayload.domain,
+              package_json: inputPayload.package_json,
+              source_code: inputPayload.source_code || inputPayload.code,
+              source_filename: inputPayload.source_filename || inputPayload.filename,
+              authorization_confirmed: inputPayload.authorization_confirmed !== false,
+              authorized_scope_note: inputPayload.authorized_scope_note,
+            });
+
+            if (secOutcome.ok) {
+              const report = secOutcome.report;
+              const mdKey = `tasks/${taskId}/${report.report_id}.md`;
+              try {
+                const mdBytes = new TextEncoder().encode(report.markdown_report).buffer;
+                const r2Md = await r2.uploadFile(mdKey, mdBytes, {
+                  contentType: 'text/markdown',
+                  customMetadata: { task_id: taskId, report_id: report.report_id },
+                });
+                await db.recordFileMetadata({
+                  id: generateSecureId('file'),
+                  r2_key: r2Md.key,
+                  filename: `${report.report_id}.md`,
+                  mime_type: 'text/markdown',
+                  size_bytes: r2Md.size,
+                  etag: r2Md.etag,
+                  uploaded_by: effectiveUserId,
+                  task_id: taskId,
+                  storage_class: 'Standard',
+                });
+              } catch {}
+
+              await db.updateTaskStatus(
+                taskId,
+                'completed',
+                100,
+                {
+                  output: report.markdown_report,
+                  report,
+                  artifact_r2_key: mdKey,
+                  executed_by: 'agent_cybersec',
+                }
+              );
+              const refreshed = await db.getTaskWithSteps(taskId);
+              if (refreshed) createdTask = refreshed;
+              return json({ success: true, task: createdTask }, 201);
+            } else {
+              await db.updateTaskStatus(taskId, 'failed', 0, undefined, secOutcome.error);
+              const refreshed = await db.getTaskWithSteps(taskId);
+              if (refreshed) createdTask = refreshed;
+              return json({ success: false, error: secOutcome.error, task: createdTask }, secOutcome.status);
+            }
+          }
 
           try {
             const agent = await db.getAgentById(body.agent_id);
@@ -1367,7 +1753,7 @@ export default {
               await runtime.submitTask({
                 task_id: taskId,
                 agent,
-                input: body.input_payload || {},
+                input: inputPayload,
                 callback_url: `${url.origin}/api/runtime/callback`,
               });
               await db.updateTaskStatus(taskId, 'running', 10);
@@ -1376,7 +1762,7 @@ export default {
             // Keep queued for distributed compute worker pickup
           }
 
-          return json({ success: true, task: createdTask }, 201);
+          return json({ success: true, task: createdTask, deduplicated: false }, 201);
         }
 
         const taskCancelMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/cancel$/);
@@ -1434,6 +1820,22 @@ export default {
 
         // 5. Cloudflare Diagnostics & Bindings Status
         if (url.pathname === '/api/cloudflare/status' && request.method === 'GET') {
+          let d1Healthy = false;
+          try {
+            if (env.DB) {
+              await env.DB.prepare('SELECT 1').run();
+              d1Healthy = true;
+            }
+          } catch {}
+
+          let r2Healthy = false;
+          try {
+            if (env.FILES_BUCKET) {
+              await env.FILES_BUCKET.list({ limit: 1 });
+              r2Healthy = true;
+            }
+          } catch {}
+
           return json({
             success: true,
             cloudflare: {
@@ -1444,12 +1846,12 @@ export default {
                 d1: {
                   binding_name: 'DB',
                   database_name: 'aetheros-d1-production',
-                  connected: !!env.DB,
+                  connected: d1Healthy,
                 },
                 r2: {
                   binding_name: 'FILES_BUCKET',
                   bucket_name: 'aetheros-agent-files',
-                  connected: !!env.FILES_BUCKET,
+                  connected: r2Healthy,
                 },
                 assets: {
                   binding_name: 'ASSETS',
@@ -1472,11 +1874,18 @@ export default {
 
         // 6. Files & R2 Storage API
         if (url.pathname === '/api/files' && request.method === 'GET') {
-          const objects = await r2.listFiles();
-          return json({ success: true, files: objects.objects });
+          const taskId = url.searchParams.get('task_id') || undefined;
+          const objects = await r2.listFiles(taskId ? `tasks/${taskId}/` : undefined);
+          const metadata = await db.getFileMetadataRecords(taskId);
+          return json({
+            success: true,
+            files: objects.objects,
+            metadata,
+          });
         }
 
         if (url.pathname === '/api/files' && request.method === 'POST') {
+          const auth = await getSessionUser(request);
           const contentType = request.headers.get('content-type') || '';
           if (contentType.includes('multipart/form-data')) {
             const formData = await request.formData();
@@ -1485,8 +1894,14 @@ export default {
             const taskId = typeof taskIdField === 'string' && taskIdField ? taskIdField : undefined;
             if (!file) return errorResponse('No file provided in form-data');
 
+            if (file.size > MAX_UPLOAD_BYTES) {
+              return errorResponse(`File size exceeds maximum limit of 50 MB (${file.size} bytes)`, 413);
+            }
+
             const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'artifact.bin';
-            const key = `uploads/${Date.now()}_${safeName}`;
+            const key = taskId
+              ? `tasks/${taskId}/${Date.now()}_${safeName}`
+              : `uploads/${Date.now()}_${safeName}`;
             const fileBuffer = await file.arrayBuffer();
 
             const r2Object = await r2.uploadFile(key, fileBuffer, {
@@ -1505,7 +1920,7 @@ export default {
               mime_type: file.type || 'application/octet-stream',
               size_bytes: r2Object.size,
               etag: r2Object.etag,
-              uploaded_by: 'usr_admin',
+              uploaded_by: auth?.user?.id || 'usr_admin',
               task_id: taskId,
               storage_class: 'Standard',
             });
@@ -1571,7 +1986,7 @@ export default {
 
         // 7. Distributed Compute Workers Grid API
 
-        // 7a. Public sanitized list of workers (never exposes api_key_hash or key_fingerprint)
+        // 7a. Public sanitized list of workers
         if (url.pathname === '/api/workers' && request.method === 'GET') {
           const workers = await db.getComputeWorkers();
           return json({ success: true, workers });
@@ -1583,7 +1998,6 @@ export default {
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
 
-          // Enforce optional enrollment secret if configured in Worker secrets
           if (env.WORKER_REGISTRATION_TOKEN) {
             const authHdr = request.headers.get('Authorization');
             const bearerMatch = authHdr?.match(/^Bearer\s+([^\s]+)$/i);
@@ -1651,8 +2065,12 @@ export default {
               system_ram_mb: Math.round(systemRamMb),
               status: 'online',
               capabilities: Array.isArray(body.capabilities)
-                ? body.capabilities.map((c: unknown) => String(c)).slice(0, 16)
+                ? body.capabilities.map((c: unknown) => String(c)).slice(0, 32)
                 : ['text', 'code'],
+              loaded_models: Array.isArray(body.loaded_models)
+                ? body.loaded_models.map((m: unknown) => String(m)).slice(0, 64)
+                : [],
+              gpu_devices: Array.isArray(body.gpu_devices) ? body.gpu_devices.slice(0, 16) : [],
               contributor_name:
                 typeof body.contributor_name === 'string' && body.contributor_name.trim()
                   ? body.contributor_name.trim().slice(0, 128)
@@ -1707,7 +2125,7 @@ export default {
           });
         }
 
-        // 7d. Authenticated worker heartbeat (supports /api/workers/heartbeat and /api/workers/:id/heartbeat)
+        // 7d. Authenticated worker heartbeat
         const heartbeatMatch = url.pathname.match(/^\/api\/workers(?:\/([^/]+))?\/heartbeat$/);
         if (heartbeatMatch && request.method === 'POST') {
           const pathWorkerId = heartbeatMatch[1];
@@ -1735,6 +2153,9 @@ export default {
             gpu_memory_used_mb: body.gpu_memory_used_mb,
             gpu_temperature_c: body.gpu_temperature_c,
             uptime_seconds: body.uptime_seconds,
+            loaded_models: Array.isArray(body.loaded_models) ? body.loaded_models : undefined,
+            gpu_devices: Array.isArray(body.gpu_devices) ? body.gpu_devices : undefined,
+            capabilities: Array.isArray(body.capabilities) ? body.capabilities : undefined,
           });
 
           return json({
@@ -1744,7 +2165,7 @@ export default {
           });
         }
 
-        // 7e. Authenticated worker graceful shutdown (supports /api/workers/shutdown and /api/workers/:id/shutdown)
+        // 7e. Authenticated worker graceful shutdown
         const shutdownMatch = url.pathname.match(/^\/api\/workers(?:\/([^/]+))?\/shutdown$/);
         if (shutdownMatch && request.method === 'POST') {
           const pathWorkerId = shutdownMatch[1];
@@ -1788,8 +2209,11 @@ export default {
           });
         }
 
-        // 7f. Authenticated worker atomic task claiming
-        if (url.pathname === '/api/workers/tasks/claim' && request.method === 'POST') {
+        // 7f. Authenticated worker atomic capability-aware task claiming
+        if (
+          (url.pathname === '/api/workers/tasks/claim' || url.pathname === '/api/workers/claim-task') &&
+          request.method === 'POST'
+        ) {
           const parsed = await parseJsonBody(request);
           if (!parsed.ok) return errorResponse(parsed.error, 400);
           const body = parsed.body;
@@ -1806,7 +2230,7 @@ export default {
             return json({
               success: true,
               task: null,
-              message: 'No tasks currently queued for execution',
+              message: 'No compatible tasks currently queued for execution',
             });
           }
 
@@ -1820,7 +2244,7 @@ export default {
           return json({ success: true, task: claimOutcome.task });
         }
 
-        // 7g. Authenticated worker task inspection (strictly scoped to assigned task)
+        // 7g. Authenticated worker task inspection
         const workerTaskGetMatch = url.pathname.match(/^\/api\/workers\/tasks\/([^/]+)$/);
         if (workerTaskGetMatch && request.method === 'GET') {
           const taskId = workerTaskGetMatch[1];
@@ -1894,6 +2318,9 @@ export default {
             const formData = await request.formData();
             const file = formData.get('file') as File | null;
             if (!file) return errorResponse('No file provided in form-data', 400);
+            if (file.size > MAX_UPLOAD_BYTES) {
+              return errorResponse('Artifact size exceeds 50 MB limit', 413);
+            }
             filename = file.name || 'artifact.bin';
             mimeType = file.type || 'application/octet-stream';
             bytesBuffer = await file.arrayBuffer();
@@ -1920,6 +2347,10 @@ export default {
                   : JSON.stringify(body.content ?? {}, null, 2);
               bytesBuffer = new TextEncoder().encode(rawContent).buffer;
             }
+          }
+
+          if (bytesBuffer.byteLength > MAX_UPLOAD_BYTES) {
+            return errorResponse('Artifact size exceeds 50 MB limit', 413);
           }
 
           const safeName =
@@ -1988,18 +2419,18 @@ export default {
           if (!auth.ok) return errorResponse(auth.error, auth.status);
 
           if (
-            body.result_payload !== undefined &&
-            (typeof body.result_payload !== 'object' ||
-              body.result_payload === null ||
-              Array.isArray(body.result_payload))
+            body.result_payload === undefined ||
+            typeof body.result_payload !== 'object' ||
+            body.result_payload === null ||
+            Array.isArray(body.result_payload)
           ) {
-            return errorResponse('result_payload must be a JSON object', 400);
+            return errorResponse('result_payload must be a non-empty JSON object', 400);
           }
 
           const outcome = await db.completeTaskFromWorker(
             taskId,
             auth.worker.id,
-            body.result_payload || {}
+            body.result_payload
           );
 
           if (!outcome.ok) {
@@ -2013,7 +2444,7 @@ export default {
             details: { worker_id: auth.worker.id },
           });
 
-          return json({ success: true, message: 'Task completed and results saved' });
+          return json({ success: true, status: 'completed', message: 'Task completed and results saved' });
         }
 
         // 7k. Authenticated worker failure reporting
@@ -2033,19 +2464,28 @@ export default {
               : 'Inference execution failed'
           );
 
-          const outcome = await db.failTaskFromWorker(taskId, auth.worker.id, errorMessage);
+          const outcome = await db.failTaskFromWorker(
+            taskId,
+            auth.worker.id,
+            errorMessage,
+            Boolean(body.retryable)
+          );
           if (!outcome.ok) {
             return errorResponse(outcome.error || 'Failure report rejected', outcome.status);
           }
 
           await db.logActivity({
-            action: 'task_failed_by_worker',
+            action: outcome.retried ? 'task_requeued_for_retry' : 'task_failed_by_worker',
             category: 'task',
             task_id: taskId,
-            details: { worker_id: auth.worker.id, error: errorMessage },
+            details: { worker_id: auth.worker.id, error: errorMessage, retried: Boolean(outcome.retried) },
           });
 
-          return json({ success: true, message: 'Task marked failed' });
+          return json({
+            success: true,
+            retried: Boolean(outcome.retried),
+            message: outcome.retried ? 'Task re-queued for retry' : 'Task marked failed',
+          });
         }
 
         // 7l. Worker revocation & single-worker public lookup
@@ -2061,7 +2501,6 @@ export default {
               operatorSecret
             );
             if (!isOperator) {
-              // Also allow a worker to revoke its own credential
               const selfAuth = await authenticateWorker(request, url, env, db, targetWorkerId);
               if (!selfAuth.ok) {
                 return errorResponse('Unauthorized: operator token or matching worker key required to revoke credential', 401);
@@ -2190,7 +2629,6 @@ export default {
             });
           }
 
-          // 1. Record user message in D1
           const userMsgId = generateSecureId('msg');
           const userMsg = await db.createMessage({
             id: userMsgId,
@@ -2201,18 +2639,15 @@ export default {
             tokens_used: Math.round(body.message.length / 4),
           });
 
-          // 2. Identify agent & requested model
           const agent = body.agent_id ? await db.getAgentById(body.agent_id) : null;
           const targetModel = body.model || agent?.model || 'qwen-2.5-coder-14b';
 
-          // 3. Check for active compute workers
           const allWorkers = await db.getComputeWorkers();
           const activeWorkers = allWorkers.filter(
             w => w.status === 'online' || w.status === 'busy'
           );
 
           if (activeWorkers.length === 0) {
-            // Check if external runtime client is configured
             if (env.INFERENCE_RUNTIME_URL) {
               try {
                 const taskId = generateSecureId('tsk');
@@ -2235,7 +2670,14 @@ export default {
 
                 await runtime.submitTask({
                   task_id: taskId,
-                  agent: agent || { id: 'agent_chat', name: 'Chat Agent', model: targetModel, system_instructions: '' } as any,
+                  agent:
+                    agent ||
+                    ({
+                      id: 'agent_chat',
+                      name: 'Chat Agent',
+                      model: targetModel,
+                      system_instructions: '',
+                    } as any),
                   input: { prompt: body.message.trim(), model: targetModel },
                   callback_url: `${url.origin}/api/runtime/callback`,
                 });
@@ -2247,12 +2689,9 @@ export default {
                   conversation_id: convId,
                   provider: 'external',
                 });
-              } catch (extErr: any) {
-                // External runtime failed
-              }
+              } catch {}
             }
 
-            // No active workers connected: provide honest explanation
             const errorText = `Inference Unavailable: No active compute workers are currently connected to execute model '${targetModel}'. Connect a Kaggle GPU worker node (dual Tesla T4) via the Compute Grid to execute local inference.`;
             const agentMsgId = generateSecureId('msg');
             const agentMsg = await db.createMessage({
@@ -2276,7 +2715,6 @@ export default {
             );
           }
 
-          // 4. Active worker exists: dispatch real inference task to D1 queue
           const taskId = generateSecureId('tsk');
           const createdTask = await db.createTask({
             id: taskId,
@@ -2331,7 +2769,7 @@ export default {
     }
 
     return new Response('AetherOS Cloudflare Worker running.', {
-      headers: { 'Content-Type': 'text/plain' },
+      headers: { 'Content-Type': 'text/plain', ...SECURITY_RESPONSE_HEADERS },
     });
   },
 };

@@ -29,7 +29,7 @@ export interface Agent {
   system_instructions: string;
   temperature: number;
   max_tokens: number;
-  permitted_tools: PermittedTool[];
+  permitted_tools: PermittedTool[] | string[] | any[];
   is_enabled: boolean;
   avatar_color: string;
   created_at: string;
@@ -37,22 +37,37 @@ export interface Agent {
 }
 
 export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
-export type TaskStatus = 
+export type TaskStatus =
   | 'pending'
-  | 'queued' 
+  | 'queued'
+  | 'validating'
+  | 'scheduled'
   | 'assigned'
   | 'downloading'
   | 'loading_model'
-  | 'running' 
+  | 'running'
   | 'uploading'
-  | 'waiting_approval' 
-  | 'completed' 
-  | 'failed' 
-  | 'cancelled' 
-  | 'paused';
+  | 'processing_result'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused'
+  | 'expired'
+  | 'retrying';
 
 export type WorkerProvider = 'kaggle' | 'oracle' | 'runpod' | 'self_hosted' | 'custom';
 export type WorkerStatus = 'online' | 'busy' | 'offline' | 'maintenance';
+
+export interface GpuDeviceSpec {
+  index: number;
+  name: string;
+  vram_total_mb: number;
+  vram_used_mb?: number;
+  vram_free_mb?: number;
+  utilization_percent?: number;
+  temperature_c?: number;
+}
 
 export interface ComputeWorker {
   id: string;
@@ -61,10 +76,13 @@ export interface ComputeWorker {
   gpu_model: string;
   gpu_count: number;
   vram_mb: number;
+  vram_total_gb?: number;
   system_ram_mb: number;
   status: WorkerStatus;
   key_prefix?: string;
   capabilities?: string[];
+  loaded_models?: string[];
+  gpu_devices?: GpuDeviceSpec[];
   contributor_name?: string;
   contributor_email?: string;
   current_task_id?: string;
@@ -81,15 +99,30 @@ export interface ComputeWorker {
   gpu_temperature_c?: number;
 }
 
-export type ModelCategory = 'text' | 'image' | 'video' | 'image_processing' | 'audio';
+export type ModelCategory =
+  | 'text'
+  | 'coding'
+  | 'vision'
+  | 'image'
+  | 'video'
+  | 'image_processing'
+  | 'audio'
+  | 'speech'
+  | 'embedding'
+  | 'specialized';
 
 export interface ModelDefinition {
   id: string;
   name: string;
   category: ModelCategory;
   min_vram_mb: number;
+  min_system_ram_mb?: number;
   supported_precisions: string[];
+  capabilities?: string[];
   weights_source: string;
+  parameter_count?: string;
+  context_window?: number;
+  default_timeout_seconds?: number;
   description?: string;
   execution_constraints?: Record<string, unknown>;
   is_enabled: boolean;
@@ -114,6 +147,8 @@ export interface Task {
   agent_id: string;
   agent_name?: string;
   user_id: string;
+  workspace_id?: string;
+  idempotency_key?: string;
   title: string;
   description?: string;
   input_payload: Record<string, unknown>;
@@ -124,8 +159,12 @@ export interface Task {
   error_message?: string;
   external_runtime_task_id?: string;
   claimed_by_worker?: string;
+  worker_id?: string;
+  progress_stage?: string;
   lease_expires_at?: string;
   attempt_count?: number;
+  max_retries?: number;
+  timeout_seconds?: number;
   started_at?: string;
   completed_at?: string;
   created_at: string;
@@ -134,12 +173,12 @@ export interface Task {
 }
 
 export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
-export type ApprovalActionType = 
-  | 'shell_execution' 
-  | 'file_modification' 
-  | 'database_write' 
-  | 'external_api_call' 
-  | 'financial_transaction' 
+export type ApprovalActionType =
+  | 'shell_execution'
+  | 'file_modification'
+  | 'database_write'
+  | 'external_api_call'
+  | 'financial_transaction'
   | 'cloud_deployment';
 
 export interface ApprovalRequest {
@@ -210,7 +249,6 @@ export interface Message {
   is_streaming?: boolean;
 }
 
-
 export interface AttachedFile {
   id: string;
   r2_key: string;
@@ -269,6 +307,7 @@ export interface UserAccount {
   email: string;
   name: string;
   role: UserRole;
+  status?: 'pending_verification' | 'active' | 'suspended';
   is_active: boolean;
   email_verified: boolean;
   avatar_url?: string;
@@ -280,13 +319,16 @@ export interface Organization {
   id: string;
   name: string;
   slug: string;
+  owner_id?: string;
   owner_user_id: string;
+  is_personal?: boolean;
   created_at: string;
   updated_at: string;
 }
 
 export interface PasskeyItem {
   id: string;
+  device_name?: string;
   credential_name?: string;
   sign_count: number;
   created_at: string;
@@ -326,7 +368,7 @@ export interface WorkerOwnershipInfo {
   worker_id: string;
   owner_user_id: string;
   organization_id?: string;
-  ownership_type: 'personal' | 'organization';
+  ownership_type: 'personal' | 'organization' | 'contributor';
   claimed_at: string;
   owner_name?: string;
 }
@@ -336,4 +378,3 @@ export interface KaggleCredentialsStatus {
   kaggle_username?: string;
   last_updated_at?: string;
 }
-

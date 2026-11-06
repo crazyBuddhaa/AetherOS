@@ -100,8 +100,21 @@ export const AgentsView: React.FC<{ onNewTaskForAgent?: (agentId: string) => voi
     setModel(agent.model);
     setSystemInstructions(agent.system_instructions);
     setTemperature(agent.temperature);
-    setAvatarColor(agent.avatar_color);
-    setSelectedTools(agent.permitted_tools);
+    const tools = Array.isArray(agent.permitted_tools)
+      ? (agent.permitted_tools.map((t: any) =>
+          typeof t === 'string'
+            ? {
+                id: t,
+                name: t,
+                description: `Tool ${t}`,
+                category: 'execution',
+                requires_approval: false,
+                risk_level: 'low',
+              }
+            : t
+        ) as PermittedTool[])
+      : [];
+    setSelectedTools(tools);
     setIsModalOpen(true);
   };
 

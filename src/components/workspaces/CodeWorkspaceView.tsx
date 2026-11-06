@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
+import { apiClient } from '../../services/api-client';
 import {
   Code2,
   Play,
@@ -13,7 +14,10 @@ import {
   Sparkles,
   RefreshCw,
   FolderGit2,
-  Download,
+  ShieldAlert,
+  ShieldCheck,
+  AlertTriangle,
+  ExternalLink,
 } from 'lucide-react';
 
 interface CodeStudioFile {
@@ -22,6 +26,7 @@ interface CodeStudioFile {
   language: 'typescript' | 'python' | 'sql' | 'rust';
   description: string;
   content: string;
+  taskId?: string;
 }
 
 const INITIAL_CODE_FILES: CodeStudioFile[] = [
@@ -127,13 +132,13 @@ def synthesize_code(prompt: str, max_new_tokens: int = 1024) -> str:
   },
 ];
 
-const QUICK_DIRECTIVES = [
+const REFERENCE_BLUEPRINTS = [
   {
     label: 'Rate-Limited Worker Middleware',
     language: 'typescript' as const,
     filename: 'rate_limiter_edge.ts',
-    prompt: 'Synthesize a sliding-window Web Crypto rate limiter middleware for Cloudflare Workers.',
-    generatedCode: `import type { Env } from './worker/types';
+    description: 'Reference Blueprint: Sliding-window rate limiter middleware for Cloudflare Workers',
+    code: `import type { Env } from './worker/types';
 
 export interface RateLimitResult {
   allowed: boolean;
@@ -169,11 +174,11 @@ export function checkSlidingWindowRateLimit(
 }`,
   },
   {
-    label: 'R2 Multipart Presigned Streamer',
+    label: 'R2 Verified Artifact Streamer',
     language: 'typescript' as const,
     filename: 'r2_stream_archive.ts',
-    prompt: 'Write a zero-copy ReadableStream uploader for Cloudflare R2 with SHA-256 integrity verification.',
-    generatedCode: `import type { R2Bucket, R2Object } from './worker/types';
+    description: 'Reference Blueprint: Cloudflare R2 uploader with SHA-256 digest verification',
+    code: `import type { R2Bucket, R2Object } from './worker/types';
 
 export async function putVerifiedArtifactStream(
   bucket: R2Bucket,
@@ -199,8 +204,8 @@ export async function putVerifiedArtifactStream(
     label: 'D1 Telemetry Aggregation View',
     language: 'sql' as const,
     filename: '0006_worker_telemetry_view.sql',
-    prompt: 'Create a normalized D1 SQLite analytical view summarizing worker GPU efficiency and task durations.',
-    generatedCode: `-- Migration: 0006_worker_telemetry_view.sql
+    description: 'Reference Blueprint: Normalized D1 SQLite view summarizing worker GPU efficiency',
+    code: `-- Migration: 0006_worker_telemetry_view.sql
 -- Aggregates per-worker task throughput and average step execution latency
 
 CREATE VIEW IF NOT EXISTS v_worker_efficiency_summary AS
@@ -225,7 +230,7 @@ GROUP BY w.id;`,
 ];
 
 export const CodeWorkspaceView: React.FC = () => {
-  const { submitTask, uploadFile, showNotification, workers } = useApp();
+  const { submitTask, uploadFile, showNotification, workers, tasks } = useApp();
 
   const [files, setFiles] = useState<CodeStudioFile[]>(INITIAL_CODE_FILES);
   const [selectedFileId, setSelectedFileId] = useState<string>(INITIAL_CODE_FILES[0].id);
@@ -235,13 +240,62 @@ export const CodeWorkspaceView: React.FC = () => {
   const [isDispatching, setIsDispatching] = useState<boolean>(false);
   const [isSavingR2, setIsSavingR2] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [executionOutput, setExecutionOutput] = useState<string[]>([
-    'TypeScript 7.0.2 compiler check: 0 errors, 0 warnings.',
-    'Target runtime: Cloudflare Workers (nodejs_compat) + Dual Tesla T4 compute grid.',
+    'Workspace initialized. Select a file to edit, load a reference blueprint, or dispatch a real synthesis task to the GPU grid.',
   ]);
+
+  // Defensive Cybersecurity Assessment (Phase 10) state
+  const [showSecurityPanel, setShowSecurityPanel] = useState<boolean>(false);
+  const [secTargetUrl, setSecTargetUrl] = useState<string>('');
+  const [secDomain, setSecDomain] = useState<string>('');
+  const [secAuthConfirmed, setSecAuthConfirmed] = useState<boolean>(false);
+  const [isRunningAudit, setIsRunningAudit] = useState<boolean>(false);
+  const [securityReport, setSecurityReport] = useState<any | null>(null);
+  const [securityReportR2Key, setSecurityReportR2Key] = useState<string | null>(null);
 
   const activeFile = files.find(f => f.id === selectedFileId) || files[0];
   const onlineWorkers = workers.filter(w => w.status === 'online' || w.status === 'busy');
+  const trackedTask = activeTaskId ? tasks.find(t => t.id === activeTaskId) : null;
+
+  // Sync completed worker output into editor file when a dispatched task finishes
+  useEffect(() => {
+    if (!trackedTask) return;
+    if (trackedTask.status === 'completed' && trackedTask.result_payload) {
+      const outputText =
+        typeof trackedTask.result_payload.output === 'string'
+          ? trackedTask.result_payload.output
+          : typeof trackedTask.result_payload.code === 'string'
+          ? trackedTask.result_payload.code
+          : JSON.stringify(trackedTask.result_payload, null, 2);
+
+      const synthId = `code_task_${trackedTask.id}`;
+      setFiles(prev => {
+        if (prev.some(f => f.id === synthId)) return prev;
+        const newFile: CodeStudioFile = {
+          id: synthId,
+          filename: `synthesized_${trackedTask.id.slice(-6)}.ts`,
+          language: 'typescript',
+          description: trackedTask.title,
+          content: outputText,
+          taskId: trackedTask.id,
+        };
+        return [newFile, ...prev];
+      });
+      setSelectedFileId(synthId);
+      setExecutionOutput(prev => [
+        ...prev,
+        `[COMPLETED]: Task ${trackedTask.id} finished on worker ${trackedTask.claimed_by_worker || 'grid'}. Output loaded into editor.`,
+      ]);
+      setActiveTaskId(null);
+    } else if (trackedTask.status === 'failed') {
+      setExecutionOutput(prev => [
+        ...prev,
+        `[FAILED]: Task ${trackedTask.id} failed: ${trackedTask.error_message || 'Execution error'}`,
+      ]);
+      setActiveTaskId(null);
+    }
+  }, [trackedTask]);
 
   const handleCodeChange = (newContent: string) => {
     setFiles(prev =>
@@ -249,107 +303,96 @@ export const CodeWorkspaceView: React.FC = () => {
     );
   };
 
-  const handleSynthesize = (customDirective?: typeof QUICK_DIRECTIVES[number]) => {
-    const directivePrompt = customDirective ? customDirective.prompt : promptInput.trim();
+  const handleLoadBlueprint = (blueprint: typeof REFERENCE_BLUEPRINTS[number]) => {
+    const existing = files.find(f => f.filename === blueprint.filename);
+    if (existing) {
+      setSelectedFileId(existing.id);
+    } else {
+      const newFile: CodeStudioFile = {
+        id: `bp_${Date.now()}`,
+        filename: blueprint.filename,
+        language: blueprint.language,
+        description: blueprint.description,
+        content: blueprint.code,
+      };
+      setFiles(prev => [newFile, ...prev]);
+      setSelectedFileId(newFile.id);
+    }
+    setExecutionOutput(prev => [
+      ...prev,
+      `Loaded reference blueprint '${blueprint.filename}' into editor buffer.`,
+    ]);
+  };
+
+  const handleSynthesize = async () => {
+    const directivePrompt = promptInput.trim();
     if (!directivePrompt) return;
 
     setIsSynthesizing(true);
-    setTimeout(() => {
-      if (customDirective) {
-        const existing = files.find(f => f.filename === customDirective.filename);
-        if (existing) {
-          setSelectedFileId(existing.id);
-        } else {
-          const newFile: CodeStudioFile = {
-            id: `code_${Date.now()}`,
-            filename: customDirective.filename,
-            language: customDirective.language,
-            description: customDirective.prompt,
-            content: customDirective.generatedCode,
-          };
-          setFiles(prev => [newFile, ...prev]);
-          setSelectedFileId(newFile.id);
-        }
-        setExecutionOutput([
-          `Model: ${selectedModel} · Precision: FP16 · Tokens: 318`,
-          `Synthesized ${customDirective.filename} with deterministic type boundaries.`,
-          'Static AST & SQLite syntax verification passed.',
+    try {
+      const created = await submitTask({
+        agentId: 'agent_dataops',
+        title: `Code Synthesis: ${directivePrompt.slice(0, 64)}`,
+        description: directivePrompt,
+        inputPayload: {
+          workspace: 'code_generation',
+          task_type: 'inference',
+          model: selectedModel,
+          prompt: directivePrompt,
+          language: activeFile.language,
+          require_gpu: true,
+          min_vram_mb: 10240,
+          required_capability: 'code',
+        },
+        priority: 'high',
+      });
+      setActiveTaskId(created.id);
+      setPromptInput('');
+
+      if (onlineWorkers.length === 0) {
+        setExecutionOutput(prev => [
+          ...prev,
+          `[QUEUED — WAITING FOR GPU WORKER]: Task '${created.id}' persisted in D1 for model '${selectedModel}'.`,
+          `No active GPU compute workers are currently online. Connect your Kaggle T4×2 worker node to execute this task—no fabricated code was substituted.`,
         ]);
       } else {
-        const newFilename =
-          activeFile.language === 'sql'
-            ? `query_${Date.now().toString().slice(-4)}.sql`
-            : activeFile.language === 'python'
-            ? `module_${Date.now().toString().slice(-4)}.py`
-            : `synthesized_${Date.now().toString().slice(-4)}.ts`;
-
-        const generatedContent = `/**
- * Synthesized via ${selectedModel}
- * Directive: ${directivePrompt}
- */
-
-export interface ExecutionContext {
-  requestId: string;
-  timestampIso: string;
-  targetModel: string;
-}
-
-export async function executeDirective(ctx: ExecutionContext): Promise<{
-  ok: boolean;
-  directive: string;
-  completedAt: string;
-}> {
-  const startMs = performance.now();
-  const elapsedMs = Math.round(performance.now() - startMs);
-
-  return {
-    ok: true,
-    directive: ${JSON.stringify(directivePrompt)},
-    completedAt: \`\${ctx.timestampIso} (+\${elapsedMs}ms)\`,
-  };
-}
-`;
-        const newFile: CodeStudioFile = {
-          id: `code_${Date.now()}`,
-          filename: newFilename,
-          language: 'typescript',
-          description: directivePrompt,
-          content: generatedContent,
-        };
-        setFiles(prev => [newFile, ...prev]);
-        setSelectedFileId(newFile.id);
-        setPromptInput('');
-        setExecutionOutput([
-          `Model: ${selectedModel} · Synthesized ${newFilename}`,
-          `Directive: "${directivePrompt}"`,
-          'Typecheck completed with 0 diagnostics.',
+        setExecutionOutput(prev => [
+          ...prev,
+          `[DISPATCHED]: Task '${created.id}' queued for ${onlineWorkers.length} online GPU node(s) using ${selectedModel}.`,
         ]);
       }
+    } finally {
       setIsSynthesizing(false);
-      showNotification(`Code synthesized with ${selectedModel}`, 'success');
-    }, 450);
+    }
   };
 
   const handleDispatchToGrid = async () => {
     setIsDispatching(true);
     try {
-      await submitTask({
+      const created = await submitTask({
         agentId: 'agent_dataops',
-        title: `Code Synthesis & Verification: ${activeFile.filename}`,
+        title: `Code Verification & Execution: ${activeFile.filename}`,
         description: activeFile.description,
         inputPayload: {
           workspace: 'code_generation',
+          task_type: 'inference',
           model: selectedModel,
           filename: activeFile.filename,
           language: activeFile.language,
           source_code: activeFile.content,
+          prompt: `Review and verify module ${activeFile.filename}:\n\n${activeFile.content}`,
           require_gpu: true,
+          min_vram_mb: 10240,
+          required_capability: 'code',
         },
         priority: 'high',
       });
+      setActiveTaskId(created.id);
       setExecutionOutput(prev => [
         ...prev,
-        `Dispatched ${activeFile.filename} to distributed compute queue (${selectedModel}).`,
+        onlineWorkers.length > 0
+          ? `Dispatched ${activeFile.filename} (Task ${created.id}) to active GPU compute queue (${selectedModel}).`
+          : `Queued ${activeFile.filename} (Task ${created.id}) in D1. Waiting for a compatible GPU worker node to connect.`,
       ]);
     } finally {
       setIsDispatching(false);
@@ -361,13 +404,39 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
     try {
       const blob = new Blob([activeFile.content], { type: 'text/plain;charset=utf-8' });
       const fileObj = new File([blob], activeFile.filename, { type: 'text/plain' });
-      await uploadFile(fileObj);
+      await uploadFile(fileObj, activeFile.taskId);
       setExecutionOutput(prev => [
         ...prev,
-        `Uploaded ${activeFile.filename} (${blob.size} bytes) to Cloudflare R2 bucket.`,
+        `Uploaded ${activeFile.filename} (${blob.size} bytes) to Cloudflare R2 bucket and recorded D1 metadata.`,
       ]);
     } finally {
       setIsSavingR2(false);
+    }
+  };
+
+  const handleRunDefensiveAudit = async () => {
+    setIsRunningAudit(true);
+    try {
+      const res = await apiClient.assessSecurity({
+        scope: 'full_audit',
+        target_url: secTargetUrl.trim() || undefined,
+        domain: secDomain.trim() || undefined,
+        source_code: activeFile.content,
+        source_filename: activeFile.filename,
+        authorization_confirmed: secAuthConfirmed || (!secTargetUrl.trim() && !secDomain.trim()),
+        authorized_scope_note: `Code Workspace Audit (${activeFile.filename})`,
+      });
+      setSecurityReport(res.report);
+      setSecurityReportR2Key(res.artifacts?.markdown_key || null);
+      setExecutionOutput(prev => [
+        ...prev,
+        `[AEGIS-0 SECURITY AUDIT]: Completed assessment ${res.report.report_id} (${res.report.summary.total_findings} findings: ${res.report.summary.verified_findings} verified, ${res.report.summary.unverified_indicators} unverified indicators). Archived to R2: ${res.artifacts?.markdown_key}`,
+      ]);
+      showNotification('Defensive cybersecurity audit completed & archived to R2', 'success');
+    } catch (err: any) {
+      showNotification(err?.message || 'Security assessment failed', 'error');
+    } finally {
+      setIsRunningAudit(false);
     }
   };
 
@@ -393,10 +462,10 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
             <span className="font-mono tabular-nums whitespace-nowrap">{files.length} workspace files</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Code Generation & Systems Workbench
+            Code Generation & Defensive Security Workbench
           </h1>
           <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-400 mt-1">
-            Author, refactor, and benchmark TypeScript Workers, D1 SQLite migrations, and PyTorch GPU pipelines.
+            Author TypeScript Workers, D1 SQLite migrations, and PyTorch GPU modules, or run authorized defensive security audits.
           </p>
         </div>
 
@@ -409,10 +478,22 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
               onChange={e => setSelectedModel(e.target.value)}
               className="font-mono font-semibold text-slate-900 dark:text-white bg-transparent focus:outline-none cursor-pointer truncate"
             >
-              <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B</option>
-              <option value="deepseek-r1-distill-qwen-14b">DeepSeek R1 Distill 14B</option>
+              <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B (14GB VRAM)</option>
+              <option value="deepseek-r1-distill-qwen-14b">DeepSeek R1 Distill 14B (15GB VRAM)</option>
             </select>
           </div>
+
+          <button
+            onClick={() => setShowSecurityPanel(prev => !prev)}
+            className={`flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors whitespace-nowrap shrink-0 ${
+              showSecurityPanel
+                ? 'border-red-600 bg-red-600 text-white'
+                : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'
+            }`}
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            <span>Aegis-0 Security Audit</span>
+          </button>
 
           <button
             onClick={handleSaveToR2}
@@ -434,6 +515,164 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
         </div>
       </div>
 
+      {/* Honest Compute Availability Banner */}
+      {onlineWorkers.length === 0 && (
+        <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/80 dark:bg-amber-950/30 flex items-start gap-3 text-xs text-amber-900 dark:text-amber-200">
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div>
+            <span className="font-semibold">No GPU Compute Workers Currently Online:</span> Code synthesis tasks submitted below will be persisted in Cloudflare D1 (`queued`) and automatically claimed when your Kaggle T4×2 worker connects. Aegis-0 static code & defensive security audits execute natively on the Cloudflare Worker and are available immediately.
+          </div>
+        </div>
+      )}
+
+      {/* Defensive Cybersecurity Specialist Panel (Phase 10) */}
+      {showSecurityPanel && (
+        <div className="p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+            <div>
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-red-600 dark:text-red-400" />
+                <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+                  Aegis-0 Defensive Cybersecurity Assessment (`agent_cybersec`)
+                </h2>
+              </div>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                Performs non-destructive HTTP security-header analysis, TLS inspection, DNS SPF/DMARC/CAA verification, and static source code auditing on `{activeFile.filename}`.
+              </p>
+            </div>
+            {securityReportR2Key && (
+              <a
+                href={`/api/files/download/${encodeURIComponent(securityReportR2Key)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 text-blue-600 dark:text-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Download R2 Markdown Report</span>
+              </a>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                Optional Target Website URL (HTTP Headers & TLS Check)
+              </label>
+              <input
+                type="url"
+                value={secTargetUrl}
+                onChange={e => setSecTargetUrl(e.target.value)}
+                placeholder="https://example.com (leave blank for code-only audit)"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                Optional Domain Name (DNS SPF / DMARC / CAA Check)
+              </label>
+              <input
+                type="text"
+                value={secDomain}
+                onChange={e => setSecDomain(e.target.value)}
+                placeholder="example.com"
+                className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+              />
+            </div>
+          </div>
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">
+            <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={secAuthConfirmed}
+                onChange={e => setSecAuthConfirmed(e.target.checked)}
+                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+              />
+              <span>
+                I confirm I am authorized to perform passive, non-destructive defensive checks on the specified target.
+              </span>
+            </label>
+
+            <button
+              onClick={handleRunDefensiveAudit}
+              disabled={isRunningAudit || ((Boolean(secTargetUrl.trim()) || Boolean(secDomain.trim())) && !secAuthConfirmed)}
+              className="px-4 py-2 text-xs font-semibold rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+            >
+              {isRunningAudit ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+              <span>{isRunningAudit ? 'Running Defensive Audit...' : `Audit ${activeFile.filename} & Target`}</span>
+            </button>
+          </div>
+
+          {securityReport && (
+            <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-800">
+              <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-center">
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                  <div className="text-[10px] text-slate-500 uppercase">Posture Score</div>
+                  <div className="text-base font-bold font-mono text-slate-900 dark:text-white">
+                    {securityReport.summary.overall_risk_score}/100
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-red-50/70 dark:bg-red-950/30 border border-red-200 dark:border-red-900/50">
+                  <div className="text-[10px] text-red-600 dark:text-red-400 uppercase">Critical / High</div>
+                  <div className="text-base font-bold font-mono text-red-700 dark:text-red-300">
+                    {securityReport.summary.critical + securityReport.summary.high}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50">
+                  <div className="text-[10px] text-amber-600 dark:text-amber-400 uppercase">Medium / Low</div>
+                  <div className="text-base font-bold font-mono text-amber-700 dark:text-amber-300">
+                    {securityReport.summary.medium + securityReport.summary.low}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/50">
+                  <div className="text-[10px] text-emerald-600 dark:text-emerald-400 uppercase">Verified Findings</div>
+                  <div className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-300">
+                    {securityReport.summary.verified_findings}
+                  </div>
+                </div>
+                <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 sm:col-span-2">
+                  <div className="text-[10px] text-slate-500 uppercase">Unverified Indicators</div>
+                  <div className="text-base font-bold font-mono text-slate-700 dark:text-slate-300">
+                    {securityReport.summary.unverified_indicators}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                {securityReport.findings.map((f: any) => (
+                  <div
+                    key={f.id}
+                    className="p-3 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 text-xs space-y-1"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-900 dark:text-white">
+                        [{f.severity.toUpperCase()} · CVSS {f.cvss_estimate.toFixed(1)}] {f.title}
+                      </span>
+                      <span
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono font-semibold ${
+                          f.verification_status === 'verified_finding'
+                            ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300'
+                            : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300'
+                        }`}
+                      >
+                        {f.verification_status}
+                      </span>
+                    </div>
+                    <p className="text-slate-600 dark:text-slate-400">{f.description}</p>
+                    <div className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                      Evidence: {f.evidence}
+                    </div>
+                    <div className="text-[11px] text-blue-700 dark:text-blue-300">
+                      Remediation: {f.remediation}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Prompt Synthesis Bar */}
       <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-3">
         <div className="flex flex-col sm:flex-row gap-2.5">
@@ -445,12 +684,12 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
               onKeyDown={e => {
                 if (e.key === 'Enter') handleSynthesize();
               }}
-              placeholder="Describe a module, SQL migration, or worker endpoint to synthesize..."
+              placeholder="Describe a module, SQL migration, or worker endpoint to dispatch to Qwen 2.5 Coder 14B..."
               className="w-full px-3.5 py-2.5 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-600"
             />
           </div>
           <button
-            onClick={() => handleSynthesize()}
+            onClick={handleSynthesize}
             disabled={isSynthesizing || !promptInput.trim()}
             className="px-4 py-2.5 text-xs font-semibold rounded-lg bg-slate-900 dark:bg-blue-600 text-white hover:bg-slate-800 dark:hover:bg-blue-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0"
           >
@@ -459,20 +698,20 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
             ) : (
               <Sparkles className="w-3.5 h-3.5" />
             )}
-            <span>{isSynthesizing ? 'Synthesizing...' : 'Generate Code'}</span>
+            <span>{isSynthesizing ? 'Dispatching Task...' : 'Dispatch Code Synthesis'}</span>
           </button>
         </div>
 
-        {/* Quick Architectural Directives */}
+        {/* Reference Blueprints */}
         <div className="flex flex-wrap items-center gap-2 pt-1">
-          <span className="text-[11px] text-slate-400 font-medium">Templates:</span>
-          {QUICK_DIRECTIVES.map((dir, i) => (
+          <span className="text-[11px] text-slate-400 font-medium">Load Reference Blueprint:</span>
+          {REFERENCE_BLUEPRINTS.map((bp, i) => (
             <button
               key={i}
-              onClick={() => handleSynthesize(dir)}
+              onClick={() => handleLoadBlueprint(bp)}
               className="px-2.5 py-1 text-xs rounded-md border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-700 dark:text-slate-300 hover:border-blue-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors whitespace-nowrap shrink-0"
             >
-              {dir.label}
+              {bp.label}
             </button>
           ))}
         </div>
@@ -589,10 +828,15 @@ export async function executeDirective(ctx: ExecutionContext): Promise<{
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex items-center gap-2 font-semibold text-slate-900 dark:text-white">
                 <Terminal className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-                <span>Verification & Execution Console</span>
+                <span>Orchestrator & Verification Console</span>
+                {trackedTask && (
+                  <span className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-950 text-blue-700 dark:text-blue-300 font-mono text-[10px]">
+                    Task {trackedTask.id}: {trackedTask.status.toUpperCase()} ({trackedTask.progress_percent}%)
+                  </span>
+                )}
               </div>
               <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400 tabular-nums">
-                Compute Nodes Online: {onlineWorkers.length}
+                Active GPU Workers: {onlineWorkers.length}
               </span>
             </div>
 

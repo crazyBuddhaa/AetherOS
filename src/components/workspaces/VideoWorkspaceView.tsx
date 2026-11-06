@@ -5,13 +5,15 @@ import {
   Play,
   Pause,
   RotateCcw,
-  Sliders,
   Sparkles,
   Camera,
   Clapperboard,
   RefreshCw,
   Grid,
-  Layers,
+  Cpu,
+  AlertTriangle,
+  CheckCircle2,
+  Upload,
 } from 'lucide-react';
 
 const CAMERA_MOTIONS = [
@@ -29,7 +31,11 @@ export const VideoWorkspaceView: React.FC = () => {
     addStudioVideo,
     studioImages,
     addStoryboardShot,
+    tasks,
+    workers,
+    files,
     submitTask,
+    uploadFile,
     showNotification,
   } = useApp();
 
@@ -44,12 +50,64 @@ export const VideoWorkspaceView: React.FC = () => {
   const [selectedKeyframeUrl, setSelectedKeyframeUrl] = useState<string>(
     studioImages[0]?.imageUrl || '/src/assets/images/storyboard_scene_aerial_1793995339019.jpg'
   );
-  const [isRendering, setIsRendering] = useState<boolean>(false);
+  const [isSubmittingTask, setIsSubmittingTask] = useState<boolean>(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [syncedTaskIds, setSyncedTaskIds] = useState<Record<string, boolean>>({});
 
   // Interactive Motion Viewport Player state
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
   const [currentFrame, setCurrentFrame] = useState<number>(1);
   const [showRuleOfThirds, setShowRuleOfThirds] = useState<boolean>(false);
+
+  const onlineVideoWorkers = workers.filter(
+    w =>
+      (w.status === 'online' || w.status === 'busy') &&
+      (w.vram_mb || (w.vram_total_gb || 0) * 1024) >= 12288 &&
+      (!w.capabilities || w.capabilities.length === 0 || w.capabilities.includes('video'))
+  );
+
+  const activeTask = activeTaskId ? tasks.find(t => t.id === activeTaskId) : null;
+
+  // Bind completed worker video synthesis tasks to StudioVideoClip library
+  useEffect(() => {
+    if (!activeTask || activeTask.status !== 'completed' || syncedTaskIds[activeTask.id]) return;
+
+    let resultObj: Record<string, any> = {};
+    try {
+      resultObj =
+        typeof activeTask.result_payload === 'string'
+          ? JSON.parse(activeTask.result_payload)
+          : (activeTask.result_payload as Record<string, any>) || {};
+    } catch {
+      resultObj = {};
+    }
+
+    const artifactFileId = resultObj.file_id || resultObj.artifact_file_id;
+    const matchedR2File = artifactFileId ? files.find(f => f.id === artifactFileId) : undefined;
+    const resolvedPreviewUrl =
+      resultObj.keyframe_url ||
+      resultObj.video_url ||
+      (matchedR2File ? `/api/files/${matchedR2File.id}/download` : selectedKeyframeUrl);
+
+    setSyncedTaskIds(prev => ({ ...prev, [activeTask.id]: true }));
+    const created = addStudioVideo({
+      title: motionPrompt.split(',')[0].slice(0, 44) || 'Temporal Sequence',
+      prompt: motionPrompt.trim(),
+      model: 'animatediff-motion-v3',
+      frames,
+      fps,
+      cameraMotion,
+      motionStrength,
+      keyframeImageUrl: resolvedPreviewUrl,
+      aspectRatio: '16:9',
+      status: 'ready',
+      progressPercent: 100,
+    });
+    setSelectedVideoId(created.id);
+    setCurrentFrame(1);
+    setIsPlaying(true);
+    showNotification(`Completed ${frames}-frame motion render on worker ${activeTask.worker_id || 'GPU node'}`, 'success');
+  }, [activeTask, syncedTaskIds, files, selectedKeyframeUrl, motionPrompt, frames, fps, cameraMotion, motionStrength, addStudioVideo, showNotification]);
 
   const activeClip: StudioVideoClip =
     studioVideos.find(v => v.id === selectedVideoId) || studioVideos[0];
@@ -67,47 +125,65 @@ export const VideoWorkspaceView: React.FC = () => {
     e.preventDefault();
     if (!motionPrompt.trim()) return;
 
-    setIsRendering(true);
+    setIsSubmittingTask(true);
     try {
-      await submitTask({
+      const task = await submitTask({
         agentId: 'agent_motion_studio',
         title: `Video Motion Synthesis (${frames}f @ ${fps}fps): ${motionPrompt.slice(0, 36)}`,
         description: `AnimateDiff v3 temporal synthesis with ${cameraMotion} trajectory`,
         inputPayload: {
           workspace: 'video_generation',
           model: 'animatediff-motion-v3',
-          prompt: motionPrompt,
+          prompt: motionPrompt.trim(),
           camera_motion: cameraMotion,
           frames,
           fps,
           motion_strength: motionStrength,
           keyframe_url: selectedKeyframeUrl,
           require_gpu: true,
+          min_vram_mb: 12288,
+          required_capability: 'video',
         },
         priority: 'high',
-      }).catch(() => {});
-
-      const created = addStudioVideo({
-        title: motionPrompt.split(',')[0].slice(0, 44) || 'Temporal Sequence',
-        prompt: motionPrompt.trim(),
-        model: 'animatediff-motion-v3',
-        frames,
-        fps,
-        cameraMotion,
-        motionStrength,
-        keyframeImageUrl: selectedKeyframeUrl,
-        aspectRatio: '16:9',
-        status: 'ready',
-        progressPercent: 100,
       });
 
-      setSelectedVideoId(created.id);
-      setCurrentFrame(1);
-      setIsPlaying(true);
-      showNotification(`Rendered ${frames}-frame motion sequence via AnimateDiff v3`, 'success');
+      setActiveTaskId(task.id);
+      if (onlineVideoWorkers.length === 0) {
+        showNotification(
+          `Task ${task.id.slice(0, 12)} queued in D1. Waiting for a GPU worker with ≥12 GB VRAM & video capability (e.g., Kaggle T4×2).`,
+          'info'
+        );
+      } else {
+        showNotification(`Dispatched AnimateDiff v3 task ${task.id.slice(0, 12)} to GPU grid`, 'success');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Failed to dispatch video motion task', 'error');
     } finally {
-      setIsRendering(false);
+      setIsSubmittingTask(false);
     }
+  };
+
+  const handleExportSequenceManifestToR2 = async () => {
+    if (!activeClip) return;
+    const payload = JSON.stringify(
+      {
+        clip_id: activeClip.id,
+        title: activeClip.title,
+        prompt: activeClip.prompt,
+        model: activeClip.model,
+        frames: activeClip.frames,
+        fps: activeClip.fps,
+        camera_motion: activeClip.cameraMotion,
+        motion_strength: activeClip.motionStrength,
+        keyframe_image_url: activeClip.keyframeImageUrl,
+        exported_at: new Date().toISOString(),
+      },
+      null,
+      2
+    );
+    const blob = new Blob([payload], { type: 'application/json' });
+    const file = new File([blob], `motion_sequence_${activeClip.id}.json`, { type: 'application/json' });
+    await uploadFile(file);
   };
 
   // Compute subtle compositor-only transform based on currentFrame and cameraMotion
@@ -158,11 +234,67 @@ export const VideoWorkspaceView: React.FC = () => {
           </p>
         </div>
 
-        <div className="flex items-center gap-2 text-xs font-mono text-slate-600 dark:text-slate-400 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 self-start lg:self-center">
-          <Film className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-          <span className="truncate">Engine: AnimateDiff Motion v3 · 12 GB VRAM</span>
+        <div className="flex flex-wrap items-center gap-2 self-start lg:self-center">
+          <div
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs font-mono ${
+              onlineVideoWorkers.length > 0
+                ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
+                : 'border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300'
+            }`}
+          >
+            <Cpu className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {onlineVideoWorkers.length > 0
+                ? `${onlineVideoWorkers.length} Video GPU Node Ready`
+                : 'No 12GB+ Video GPU Online (Queue Mode)'}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 text-xs font-mono text-slate-600 dark:text-slate-400 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900">
+            <Film className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+            <span className="truncate">Engine: AnimateDiff Motion v3 · 12 GB VRAM</span>
+          </div>
         </div>
       </div>
+
+      {/* Live Task Status Banner */}
+      {activeTask && (
+        <div
+          className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+            activeTask.status === 'completed'
+              ? 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200'
+              : activeTask.status === 'failed'
+              ? 'border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200'
+              : 'border-blue-200 dark:border-blue-900/50 bg-blue-50/60 dark:bg-blue-950/30 text-blue-800 dark:text-blue-200'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {activeTask.status === 'completed' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+            ) : activeTask.status === 'failed' ? (
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+            ) : (
+              <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-blue-600" />
+            )}
+            <div>
+              <div className="font-semibold">
+                {activeTask.title} — <span className="font-mono uppercase">{activeTask.status}</span>
+                {typeof activeTask.progress_percent === 'number' && activeTask.status !== 'queued'
+                  ? ` (${activeTask.progress_percent}%)`
+                  : ''}
+              </div>
+              <div className="text-[11px] opacity-85 mt-0.5">
+                {activeTask.status === 'queued' && onlineVideoWorkers.length === 0
+                  ? 'Task persisted in Cloudflare D1. Waiting for a Kaggle T4×2 or GPU worker with ≥12 GB VRAM to claim and execute.'
+                  : activeTask.error_message ||
+                    activeTask.progress_stage ||
+                    `Assigned worker: ${activeTask.claimed_by_worker || activeTask.worker_id || 'awaiting capability-aware claim'}`}
+              </div>
+            </div>
+          </div>
+          <span className="font-mono text-[11px] opacity-75 shrink-0">{activeTask.id}</span>
+        </div>
+      )}
 
       {/* Main Split Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -315,18 +447,18 @@ export const VideoWorkspaceView: React.FC = () => {
 
           <button
             type="submit"
-            disabled={isRendering || !motionPrompt.trim()}
+            disabled={isSubmittingTask || !motionPrompt.trim()}
             className="w-full py-2.5 px-4 rounded-lg bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-xs flex items-center justify-center gap-2 transition-colors"
           >
-            {isRendering ? (
+            {isSubmittingTask ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Rendering Temporal Sequence...</span>
+                <span>Dispatching to GPU Grid...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                <span>Render Motion Clip</span>
+                <span>Dispatch Motion Render Task</span>
               </>
             )}
           </button>
@@ -444,28 +576,37 @@ export const VideoWorkspaceView: React.FC = () => {
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      const shot = addStoryboardShot({
-                        title: activeClip.title,
-                        sceneHeading: 'EXT. MOTION SEQUENCE - DAY',
-                        visualPrompt: activeClip.prompt,
-                        cameraAngle: 'Dynamic Tracking',
-                        lens: '35mm Anamorphic',
-                        cameraMovement: activeClip.cameraMotion,
-                        dialogue: 'Animated motion plate attached.',
-                        durationSec: Number((activeClip.frames / activeClip.fps).toFixed(1)),
-                        aspectRatio: activeClip.aspectRatio,
-                        imageUrl: activeClip.keyframeImageUrl,
-                        status: 'ready',
-                      });
-                      showNotification(`Added clip to Storyboard Shot #${shot.shotNumber}`, 'success');
-                    }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
-                  >
-                    <Clapperboard className="w-3.5 h-3.5" />
-                    <span>Append to Storyboard</span>
-                  </button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleExportSequenceManifestToR2}
+                      className="flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap"
+                    >
+                      <Upload className="w-3.5 h-3.5" />
+                      <span>Save Manifest to R2</span>
+                    </button>
+                    <button
+                      onClick={() => {
+                        const shot = addStoryboardShot({
+                          title: activeClip.title,
+                          sceneHeading: 'EXT. MOTION SEQUENCE - DAY',
+                          visualPrompt: activeClip.prompt,
+                          cameraAngle: 'Dynamic Tracking',
+                          lens: '35mm Anamorphic',
+                          cameraMovement: activeClip.cameraMotion,
+                          dialogue: 'Animated motion plate attached.',
+                          durationSec: Number((activeClip.frames / activeClip.fps).toFixed(1)),
+                          aspectRatio: activeClip.aspectRatio,
+                          imageUrl: activeClip.keyframeImageUrl,
+                          status: 'ready',
+                        });
+                        showNotification(`Added clip to Storyboard Shot #${shot.shotNumber}`, 'success');
+                      }}
+                      className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors whitespace-nowrap shrink-0"
+                    >
+                      <Clapperboard className="w-3.5 h-3.5" />
+                      <span>Append to Storyboard</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -474,7 +615,7 @@ export const VideoWorkspaceView: React.FC = () => {
           {/* Rendered Video Sequences List */}
           <div className="space-y-3">
             <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-              Rendered Motion Sequences ({studioVideos.length})
+              Motion Sequence Library ({studioVideos.length})
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {studioVideos.map(clip => {

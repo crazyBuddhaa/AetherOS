@@ -55,7 +55,7 @@ DEFAULT_PLATFORM_URL = "https://aetheros-agent-platform.trileaf.workers.dev"
 DEFAULT_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
     "qwen-2.5-coder-14b": {
         "weights_source": "Qwen/Qwen2.5-Coder-14B-Instruct",
-        "category": "text",
+        "category": "coding",
         "min_vram_mb_fp16": 28000,
         "min_vram_mb_int4": 10240,
         "default_precision": "int4",
@@ -67,9 +67,16 @@ DEFAULT_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
         "min_vram_mb_int4": 10240,
         "default_precision": "int4",
     },
+    "qwen-2-vl-7b-instruct": {
+        "weights_source": "Qwen/Qwen2-VL-7B-Instruct",
+        "category": "vision",
+        "min_vram_mb_fp16": 15360,
+        "min_vram_mb_int4": 8192,
+        "default_precision": "fp16",
+    },
     "whisper-large-v3-turbo": {
         "weights_source": "openai/whisper-large-v3-turbo",
-        "category": "audio",
+        "category": "speech",
         "min_vram_mb_fp16": 4096,
         "min_vram_mb_int4": 3072,
         "default_precision": "fp16",
@@ -86,6 +93,34 @@ DEFAULT_MODEL_CATALOG: Dict[str, Dict[str, Any]] = {
         "category": "image",
         "min_vram_mb_fp16": 10240,
         "min_vram_mb_int4": 10240,
+        "default_precision": "fp16",
+    },
+    "real-esrgan-4x": {
+        "weights_source": "xinntao/Real-ESRGAN",
+        "category": "image_processing",
+        "min_vram_mb_fp16": 4096,
+        "min_vram_mb_int4": 4096,
+        "default_precision": "fp16",
+    },
+    "birefnet-bg-removal": {
+        "weights_source": "ZhengPeng7/BiRefNet",
+        "category": "image_processing",
+        "min_vram_mb_fp16": 4096,
+        "min_vram_mb_int4": 4096,
+        "default_precision": "fp16",
+    },
+    "animatediff-motion-v3": {
+        "weights_source": "guoyww/animatediff-motion-adapter-v1-5-3",
+        "category": "video",
+        "min_vram_mb_fp16": 12288,
+        "min_vram_mb_int4": 12288,
+        "default_precision": "fp16",
+    },
+    "bge-large-en-v1.5": {
+        "weights_source": "BAAI/bge-large-en-v1.5",
+        "category": "embedding",
+        "min_vram_mb_fp16": 2048,
+        "min_vram_mb_int4": 2048,
         "default_precision": "fp16",
     },
 }
@@ -212,11 +247,12 @@ def _query_nvidia_smi() -> Optional[Tuple[float, float]]:
 
 
 def detect_hardware(provider_override: Optional[str] = None) -> Dict[str, Any]:
-    """Detect local GPU devices, aggregate VRAM, and system RAM accurately."""
+    """Detect local GPU devices (including individual T4x2 devices), aggregate VRAM, and system RAM accurately."""
     gpu_count = 0
     gpu_model = "CPU Only"
     vram_mb = 0
     cuda_available = False
+    gpu_devices: List[Dict[str, Any]] = []
 
     try:
         import torch
@@ -225,9 +261,21 @@ def detect_hardware(provider_override: Optional[str] = None) -> Dict[str, Any]:
             cuda_available = True
             gpu_count = torch.cuda.device_count()
             gpu_model = torch.cuda.get_device_name(0)
-            total_bytes = sum(
-                torch.cuda.get_device_properties(i).total_memory for i in range(gpu_count)
-            )
+            total_bytes = 0
+            for i in range(gpu_count):
+                props = torch.cuda.get_device_properties(i)
+                dev_total_mb = int(props.total_memory // (1024 * 1024))
+                dev_used_mb = int(torch.cuda.memory_allocated(i) // (1024 * 1024))
+                total_bytes += props.total_memory
+                gpu_devices.append(
+                    {
+                        "index": i,
+                        "name": torch.cuda.get_device_name(i),
+                        "vram_total_mb": dev_total_mb,
+                        "vram_used_mb": dev_used_mb,
+                        "vram_free_mb": max(0, dev_total_mb - dev_used_mb),
+                    }
+                )
             vram_mb = int(total_bytes // (1024 * 1024))
     except ImportError:
         logger.warning("PyTorch not installed in Python environment; reporting 0 CUDA GPUs.")
@@ -243,6 +291,22 @@ def detect_hardware(provider_override: Optional[str] = None) -> Dict[str, Any]:
     hostname = socket.gethostname()[:8] or "node"
     node_prefix = "Kaggle" if provider == "kaggle" else "Worker"
 
+    capabilities: List[str] = ["diagnostic"]
+    if cuda_available:
+        capabilities = [
+            "text",
+            "code",
+            "coding",
+            "vision",
+            "image",
+            "image_processing",
+            "video",
+            "audio",
+            "speech",
+            "embedding",
+            "diagnostic",
+        ]
+
     return {
         "name": f"{node_prefix} {gpu_model} Node ({hostname})",
         "provider": provider,
@@ -251,24 +315,39 @@ def detect_hardware(provider_override: Optional[str] = None) -> Dict[str, Any]:
         "vram_mb": vram_mb,
         "system_ram_mb": system_ram_mb,
         "cuda_available": cuda_available,
-        "capabilities": ["text", "code", "diagnostic"] if cuda_available else ["diagnostic"],
+        "capabilities": capabilities,
+        "gpu_devices": gpu_devices,
+        "loaded_models": [],
         "contributor_name": os.environ.get("CONTRIBUTOR_NAME", "Kaggle Contributor Node"),
     }
 
 
-def get_telemetry() -> Dict[str, Any]:
-    """Sample live CUDA memory usage, GPU utilization, and temperature."""
+def get_telemetry(loaded_models: Optional[List[str]] = None) -> Dict[str, Any]:
+    """Sample live CUDA memory usage per GPU, GPU utilization, and temperature."""
     gpu_util = 0.0
     vram_used_mb = 0
     gpu_temp = 0.0
+    gpu_devices: List[Dict[str, Any]] = []
 
     try:
         import torch
 
         if torch.cuda.is_available():
-            allocated_bytes = sum(
-                torch.cuda.memory_allocated(i) for i in range(torch.cuda.device_count())
-            )
+            allocated_bytes = 0
+            for i in range(torch.cuda.device_count()):
+                props = torch.cuda.get_device_properties(i)
+                dev_total_mb = int(props.total_memory // (1024 * 1024))
+                dev_used_mb = int(torch.cuda.memory_allocated(i) // (1024 * 1024))
+                allocated_bytes += torch.cuda.memory_allocated(i)
+                gpu_devices.append(
+                    {
+                        "index": i,
+                        "name": torch.cuda.get_device_name(i),
+                        "vram_total_mb": dev_total_mb,
+                        "vram_used_mb": dev_used_mb,
+                        "vram_free_mb": max(0, dev_total_mb - dev_used_mb),
+                    }
+                )
             vram_used_mb = int(allocated_bytes // (1024 * 1024))
     except Exception:
         pass
@@ -277,11 +356,16 @@ def get_telemetry() -> Dict[str, Any]:
     if smi is not None:
         gpu_util, gpu_temp = smi
 
-    return {
+    payload: Dict[str, Any] = {
         "gpu_utilization_percent": gpu_util,
         "gpu_memory_used_mb": vram_used_mb,
         "gpu_temperature_c": gpu_temp,
     }
+    if gpu_devices:
+        payload["gpu_devices"] = gpu_devices
+    if loaded_models is not None:
+        payload["loaded_models"] = loaded_models
+    return payload
 
 
 @dataclass

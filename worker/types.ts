@@ -1,20 +1,84 @@
 /**
- * Cloudflare Worker Environment Bindings & Domain Types
+ * TypeScript Definitions for AetherOS Cloudflare Worker, D1 Database, and R2 Bucket
  */
 
-// Cloudflare Workers Ambient Types
-export interface D1PreparedStatement {
-  bind(...values: any[]): D1PreparedStatement;
-  first<T = unknown>(colName?: string): Promise<T | null>;
-  all<T = unknown>(): Promise<{ results?: T[]; success: boolean; meta?: any }>;
-  run<T = unknown>(): Promise<{ success: boolean; meta?: any }>;
+export interface Env {
+  // Cloudflare D1 Database Binding
+  DB: D1Database;
+
+  // Cloudflare R2 Storage Bucket Binding
+  FILES_BUCKET: R2Bucket;
+
+  // Static Assets Binding (Cloudflare Workers Assets)
+  ASSETS?: {
+    fetch: (request: Request) => Promise<Response>;
+  };
+
+  // Environment Variables
+  ENVIRONMENT: string;
+  INFERENCE_RUNTIME_URL: string;
+  INFERENCE_RUNTIME_TIMEOUT_MS?: string;
+  INFERENCE_RUNTIME_MAX_RETRIES?: string;
+  REQUIRE_WORKER_NONCE?: string;
+
+  // Secrets (configured via `wrangler secret put`)
+  RUNTIME_API_KEY?: string;
+  JWT_SECRET?: string;
+  WORKER_AUTH_PEPPER?: string;
+  WORKER_REGISTRATION_TOKEN?: string;
 }
 
+// Minimal Cloudflare Workers Runtime Types (so tsc compiles cleanly without external global conflicts)
 export interface D1Database {
   prepare(query: string): D1PreparedStatement;
   dump(): Promise<ArrayBuffer>;
-  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<any[]>;
-  exec(query: string): Promise<any>;
+  batch<T = unknown>(statements: D1PreparedStatement[]): Promise<D1Result<T>[]>;
+  exec(query: string): Promise<D1ExecResult>;
+}
+
+export interface D1PreparedStatement {
+  bind(...values: unknown[]): D1PreparedStatement;
+  first<T = unknown>(colName?: string): Promise<T | null>;
+  run<T = unknown>(): Promise<D1Result<T>>;
+  all<T = unknown>(): Promise<D1Result<T>>;
+}
+
+export interface D1Result<T = unknown> {
+  results: T[];
+  success: boolean;
+  meta: Record<string, unknown>;
+  error?: string;
+}
+
+export interface D1ExecResult {
+  count: number;
+  duration: number;
+}
+
+export interface R2Bucket {
+  put(
+    key: string,
+    value: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
+    options?: R2PutOptions
+  ): Promise<R2Object>;
+  get(key: string): Promise<R2ObjectBody | null>;
+  delete(keys: string | string[]): Promise<void>;
+  list(options?: R2ListOptions): Promise<R2Objects>;
+}
+
+export interface R2PutOptions {
+  httpMetadata?: {
+    contentType?: string;
+    contentDisposition?: string;
+    cacheControl?: string;
+  };
+  customMetadata?: Record<string, string>;
+}
+
+export interface R2ListOptions {
+  limit?: number;
+  prefix?: string;
+  cursor?: string;
 }
 
 export interface R2Object {
@@ -22,8 +86,11 @@ export interface R2Object {
   version: string;
   size: number;
   etag: string;
-  httpMetadata?: Record<string, any>;
+  httpMetadata?: {
+    contentType?: string;
+  };
   customMetadata?: Record<string, string>;
+  uploaded?: Date;
 }
 
 export interface R2ObjectBody extends R2Object {
@@ -39,60 +106,7 @@ export interface R2Objects {
   cursor?: string;
 }
 
-export interface R2Bucket {
-  put(key: string, value: ReadableStream | ArrayBuffer | string | null, options?: any): Promise<R2Object>;
-  get(key: string, options?: any): Promise<R2ObjectBody | null>;
-  delete(keys: string | string[]): Promise<void>;
-  list(options?: any): Promise<R2Objects>;
-}
-
-export interface Fetcher {
-  fetch(request: Request | string, init?: RequestInit): Promise<Response>;
-}
-
-export interface Env {
-  // Bindings
-  DB: D1Database;
-  FILES_BUCKET: R2Bucket;
-  ASSETS?: Fetcher;
-
-
-  // Environment variables
-  ENVIRONMENT: string;
-  INFERENCE_RUNTIME_URL: string;
-  INFERENCE_RUNTIME_TIMEOUT_MS?: string;
-  INFERENCE_RUNTIME_MAX_RETRIES?: string;
-
-  // Secrets
-  RUNTIME_API_KEY?: string;
-  JWT_SECRET?: string;
-  WORKER_AUTH_PEPPER?: string;
-  WORKER_REGISTRATION_TOKEN?: string;
-  REQUIRE_WORKER_NONCE?: string;
-}
-
-export type UserRole = 'admin' | 'operator' | 'member' | 'viewer';
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: UserRole;
-  avatar_url?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface PermittedTool {
-  id: string;
-  name: string;
-  description: string;
-  category: 'execution' | 'retrieval' | 'network' | 'filesystem' | 'database';
-  requires_approval: boolean;
-  risk_level: 'low' | 'medium' | 'high' | 'critical';
-  parameters_schema: Record<string, unknown>;
-}
-
+// Domain Models matching D1 SQL Schema
 export interface Agent {
   id: string;
   name: string;
@@ -101,7 +115,7 @@ export interface Agent {
   system_instructions: string;
   temperature: number;
   max_tokens: number;
-  permitted_tools: PermittedTool[];
+  permitted_tools: unknown[];
   is_enabled: boolean;
   avatar_color: string;
   created_by?: string;
@@ -109,23 +123,65 @@ export interface Agent {
   updated_at: string;
 }
 
-export type TaskPriority = 'low' | 'medium' | 'high' | 'critical';
-export type TaskStatus = 
+export type TaskLifecycleStatus =
   | 'pending'
-  | 'queued' 
+  | 'queued'
+  | 'validating'
+  | 'scheduled'
   | 'assigned'
   | 'downloading'
   | 'loading_model'
-  | 'running' 
+  | 'running'
   | 'uploading'
-  | 'waiting_approval' 
-  | 'completed' 
-  | 'failed' 
-  | 'cancelled' 
-  | 'paused';
+  | 'processing_result'
+  | 'waiting_approval'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'paused'
+  | 'expired'
+  | 'retrying';
+
+export interface Task {
+  id: string;
+  agent_id: string;
+  agent_name?: string;
+  user_id: string;
+  workspace_id?: string;
+  idempotency_key?: string;
+  title: string;
+  description?: string;
+  input_payload: Record<string, unknown>;
+  priority: 'low' | 'medium' | 'high' | 'critical';
+  status: TaskLifecycleStatus;
+  progress_percent: number;
+  result_payload?: Record<string, unknown>;
+  error_message?: string;
+  external_runtime_task_id?: string;
+  claimed_by_worker?: string;
+  lease_expires_at?: string;
+  attempt_count?: number;
+  max_retries?: number;
+  timeout_seconds?: number;
+  started_at?: string;
+  completed_at?: string;
+  created_at: string;
+  updated_at: string;
+  steps?: TaskStep[];
+}
 
 export type WorkerProvider = 'kaggle' | 'oracle' | 'runpod' | 'self_hosted' | 'custom';
 export type WorkerStatus = 'online' | 'busy' | 'offline' | 'maintenance';
+
+export interface GpuDeviceSpec {
+  index: number;
+  name: string;
+  vram_total_mb: number;
+  vram_used_mb?: number;
+  vram_free_mb?: number;
+  utilization_percent?: number;
+  temperature_c?: number;
+}
 
 export interface ComputeWorker {
   id: string;
@@ -136,8 +192,13 @@ export interface ComputeWorker {
   vram_mb: number;
   system_ram_mb: number;
   status: WorkerStatus;
+  api_key_hash?: string;
   key_prefix?: string;
+  key_fingerprint?: string;
+  is_revoked?: boolean;
   capabilities?: string[];
+  loaded_models?: string[];
+  gpu_devices?: GpuDeviceSpec[];
   contributor_name?: string;
   contributor_email?: string;
   current_task_id?: string;
@@ -154,38 +215,34 @@ export interface ComputeWorker {
   gpu_temperature_c?: number;
 }
 
-export interface ComputeWorkerRecord extends ComputeWorker {
-  api_key_hash: string;
-  key_fingerprint?: string | null;
-  is_revoked: number;
-}
-
-export type ModelCategory = 'text' | 'image' | 'video' | 'image_processing' | 'audio';
+export type ModelCategory =
+  | 'text'
+  | 'coding'
+  | 'vision'
+  | 'image'
+  | 'video'
+  | 'image_processing'
+  | 'audio'
+  | 'speech'
+  | 'embedding'
+  | 'specialized';
 
 export interface ModelDefinition {
   id: string;
   name: string;
   category: ModelCategory;
   min_vram_mb: number;
+  min_system_ram_mb?: number;
   supported_precisions: string[];
+  capabilities?: string[];
   weights_source: string;
+  parameter_count?: string;
+  context_window?: number;
+  default_timeout_seconds?: number;
   description?: string;
   execution_constraints?: Record<string, unknown>;
   is_enabled: boolean;
   created_at: string;
-}
-
-export interface WorkerRegisterPayload {
-  name?: string;
-  provider?: WorkerProvider;
-  gpu_model: string;
-  gpu_count?: number;
-  vram_mb?: number;
-  system_ram_mb?: number;
-  capabilities?: string[];
-  contributor_name?: string;
-  contributor_email?: string;
-  registration_token?: string;
 }
 
 export interface WorkerHeartbeatPayload {
@@ -195,6 +252,10 @@ export interface WorkerHeartbeatPayload {
   gpu_memory_used_mb?: number;
   gpu_temperature_c?: number;
   uptime_seconds?: number;
+  loaded_models?: string[];
+  capabilities?: string[];
+  gpu_devices?: GpuDeviceSpec[];
+  system_ram_mb?: number;
 }
 
 export interface TaskStep {
@@ -210,92 +271,28 @@ export interface TaskStep {
   created_at: string;
 }
 
-export interface Task {
-  id: string;
-  agent_id: string;
-  user_id: string;
-  title: string;
-  description?: string;
-  input_payload: Record<string, unknown>;
-  priority: TaskPriority;
-  status: TaskStatus;
-  progress_percent: number;
-  result_payload?: Record<string, unknown>;
-  error_message?: string;
-  external_runtime_task_id?: string;
-  claimed_by_worker?: string;
-  lease_expires_at?: string;
-  attempt_count?: number;
-  started_at?: string;
-  completed_at?: string;
-  created_at: string;
-  updated_at: string;
-  steps?: TaskStep[];
-  agent_name?: string;
-}
-
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired';
-export type ApprovalActionType = 
-  | 'shell_execution' 
-  | 'file_modification' 
-  | 'database_write' 
-  | 'external_api_call' 
-  | 'financial_transaction' 
-  | 'cloud_deployment';
-
 export interface ApprovalRequest {
   id: string;
   task_id: string;
+  task_title?: string;
   agent_id: string;
+  agent_name?: string;
   step_id?: string;
   action_name: string;
-  action_type: ApprovalActionType;
-  payload: {
-    command?: string;
-    target?: string;
-    diff?: string;
-    details?: string;
-    parameters?: Record<string, unknown>;
-  };
+  action_type:
+    | 'shell_execution'
+    | 'file_modification'
+    | 'database_write'
+    | 'external_api_call'
+    | 'financial_transaction'
+    | 'cloud_deployment';
+  payload: Record<string, unknown>;
   risk_level: 'low' | 'medium' | 'high' | 'critical';
-  status: ApprovalStatus;
+  status: 'pending' | 'approved' | 'rejected' | 'expired';
   requested_at: string;
   decided_at?: string;
   decided_by?: string;
   review_comment?: string;
-  agent_name?: string;
-  task_title?: string;
-}
-
-export interface Conversation {
-  id: string;
-  user_id: string;
-  agent_id?: string;
-  title: string;
-  is_pinned: boolean;
-  created_at: string;
-  updated_at: string;
-  agent_name?: string;
-  agent_avatar_color?: string;
-  last_message?: string;
-  message_count?: number;
-}
-
-export interface Message {
-  id: string;
-  conversation_id: string;
-  sender_type: 'user' | 'agent' | 'system' | 'tool';
-  content: string;
-  tool_calls?: Array<{
-    tool_id: string;
-    tool_name: string;
-    input: Record<string, unknown>;
-    output?: Record<string, unknown>;
-    status: 'success' | 'failed' | 'requires_approval';
-  }>;
-  attachments?: string[];
-  tokens_used: number;
-  created_at: string;
 }
 
 export interface R2FileRecord {
@@ -324,56 +321,43 @@ export interface ActivityLog {
   created_at: string;
 }
 
-// External Runtime Integration Types (Self-Hosted Inference Engine)
-export interface RuntimeSubmissionRequest {
-  task_id: string;
-  agent: {
-    id: string;
-    name: string;
-    model: string;
-    system_instructions: string;
-    temperature: number;
-    permitted_tools: PermittedTool[];
-  };
-  input: Record<string, unknown>;
-  callback_url: string;
+export interface Conversation {
+  id: string;
+  user_id: string;
+  agent_id?: string;
+  agent_name?: string;
+  agent_avatar_color?: string;
+  title: string;
+  is_pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  last_message?: string;
+  message_count?: number;
 }
 
-export interface RuntimeSubmissionResponse {
-  external_task_id: string;
-  status: 'queued' | 'claimed' | 'rejected';
-  assigned_node?: string;
-  estimated_queue_time_ms?: number;
+export interface Message {
+  id: string;
+  conversation_id: string;
+  sender_type: 'user' | 'agent' | 'system' | 'tool';
+  content: string;
+  thinking?: string;
+  tool_calls?: unknown[];
+  artifacts?: unknown[];
+  attachments?: string[];
+  tokens_used: number;
+  created_at: string;
 }
 
-export interface RuntimeStatusResponse {
-  external_task_id: string;
-  status: 'running' | 'completed' | 'failed' | 'waiting_approval';
-  current_step?: string;
-  progress_percent: number;
-  result?: Record<string, unknown>;
-  error?: string;
-  heartbeat_timestamp: string;
-}
+// --- USER ACCOUNTS, PASSWORDLESS AUTH, WORKSPACES & SESSIONS (Migration 0004) ---
 
-export interface RuntimeHeartbeatResponse {
-  node_id: string;
-  status: 'healthy' | 'degraded' | 'maintenance';
-  active_jobs: number;
-  capacity_percent: number;
-  engine_version: string;
-  uptime_seconds: number;
-}
-
-// User Account & Organization Types
 export interface UserAccount {
   id: string;
   email: string;
   name: string;
   role: 'admin' | 'operator' | 'member' | 'viewer';
   status: 'pending_verification' | 'active' | 'suspended';
-  verification_token_hash?: string;
-  verification_expires_at?: string;
+  is_active?: boolean;
+  email_verified?: boolean;
   avatar_url?: string;
   created_at: string;
   updated_at: string;
@@ -384,6 +368,7 @@ export interface Organization {
   name: string;
   slug: string;
   owner_id: string;
+  owner_user_id?: string;
   is_personal: boolean;
   created_at: string;
   updated_at: string;
@@ -398,13 +383,13 @@ export interface OrganizationMembership {
 }
 
 export interface PasskeyCredential {
-  id: string;
+  id: string; // Credential ID (base64url)
   user_id: string;
-  public_key: string;
-  algorithm: number;
+  public_key: string; // SPKI / COSE key in base64url
+  algorithm: number; // -7 (ES256) or -257 (RS256)
   sign_count: number;
   device_name: string;
-  transports?: string[];
+  transports: string[];
   aaguid?: string;
   created_at: string;
   last_used_at?: string;
@@ -437,7 +422,7 @@ export interface AuthChallenge {
 }
 
 export interface AuthSession {
-  id: string;
+  id: string; // Session Token
   user_id: string;
   organization_id?: string;
   ip_address?: string;
@@ -476,6 +461,7 @@ export interface ComputeSession {
   error_message?: string;
   created_at: string;
   updated_at: string;
+  worker?: ComputeWorker | null;
 }
 
 export interface WorkerOwnership {
@@ -508,3 +494,49 @@ export interface SecurityAuditEvent {
   ip_address?: string;
   created_at: string;
 }
+
+export interface FileMetadata {
+  id: string;
+  name: string;
+  size: number;
+  mimeType: string;
+  url: string;
+  createdAt: string;
+}
+
+export interface RuntimeSubmissionRequest {
+  task_id: string;
+  agent_id?: string;
+  agent?: Agent | { id: string; name?: string; model?: string; system_instructions?: string };
+  model?: string;
+  input_payload?: Record<string, unknown>;
+  input?: Record<string, unknown>;
+  callback_url?: string;
+  system_instructions?: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
+export interface RuntimeSubmissionResponse {
+  accepted: boolean;
+  external_task_id: string;
+  status: string;
+  message?: string;
+}
+
+export interface RuntimeStatusResponse {
+  external_task_id: string;
+  status: TaskLifecycleStatus;
+  progress_percent: number;
+  result_payload?: Record<string, unknown>;
+  error_message?: string;
+}
+
+export interface RuntimeHeartbeatResponse {
+  online: boolean;
+  node_id: string;
+  engine_version?: string;
+  active_jobs?: number;
+  capacity_percent?: number;
+}
+

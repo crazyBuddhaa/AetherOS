@@ -1,18 +1,15 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useApp, StudioImageAsset } from '../../context/AppContext';
 import {
-  Image as ImageIcon,
   Sparkles,
   Download,
   Sliders,
-  Layers,
   Film,
   Clapperboard,
   RefreshCw,
-  Check,
-  Trash2,
-  Maximize2,
-  Cpu,
+  AlertTriangle,
+  HardDrive,
+  Upload,
 } from 'lucide-react';
 
 const STYLE_PRESETS = [
@@ -20,25 +17,21 @@ const STYLE_PRESETS = [
     id: 'arch_daylight',
     label: 'Architectural Daylight',
     promptSuffix: 'minimalist concrete and warm oak interior, natural morning daylight, Leica 35mm editorial photography, 8k',
-    fallbackImg: '/src/assets/images/studio_arch_render_1793995336638.jpg',
   },
   {
     id: 'industrial_macro',
     label: 'Industrial Hardware Macro',
     promptSuffix: 'precision anodized aluminum industrial design prototype on neutral limestone, soft studio side lighting, shallow depth of field',
-    fallbackImg: '/src/assets/images/studio_product_design_1793995336944.jpg',
   },
   {
     id: 'cinematic_lab',
     label: 'Anamorphic Cinema Still',
     promptSuffix: 'cinematic wide-angle film still, golden hour tungsten and natural window illumination, anamorphic lens bokeh',
-    fallbackImg: '/src/assets/images/storyboard_scene_lab_1793995338170.jpg',
   },
   {
     id: 'aerial_landscape',
     label: 'Aerial Documentary',
     promptSuffix: 'aerial wide establishing photography at sunrise, coastal mist, clean architectural lines, high dynamic range',
-    fallbackImg: '/src/assets/images/storyboard_scene_aerial_1793995339019.jpg',
   },
 ];
 
@@ -46,11 +39,13 @@ export const ImageWorkspaceView: React.FC = () => {
   const {
     studioImages,
     addStudioImage,
-    deleteStudioImage,
     addStoryboardShot,
     submitTask,
+    uploadFile,
     setActiveTab,
     showNotification,
+    workers,
+    tasks,
   } = useApp();
 
   const [selectedImageId, setSelectedImageId] = useState<string>(studioImages[0]?.id || '');
@@ -68,9 +63,53 @@ export const ImageWorkspaceView: React.FC = () => {
   const [bgRemove, setBgRemove] = useState<boolean>(false);
   const [selectedPreset, setSelectedPreset] = useState<string>('arch_daylight');
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [isUploadingR2, setIsUploadingR2] = useState<boolean>(false);
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   const activeImage: StudioImageAsset | undefined =
     studioImages.find(i => i.id === selectedImageId) || studioImages[0];
+
+  const onlineWorkers = workers.filter(w => w.status === 'online' || w.status === 'busy');
+  const trackedTask = activeTaskId ? tasks.find(t => t.id === activeTaskId) : null;
+
+  useEffect(() => {
+    if (!trackedTask) return;
+    if (trackedTask.status === 'completed' && trackedTask.result_payload) {
+      const payload = trackedTask.result_payload as Record<string, any>;
+      const r2Key = payload.artifact_r2_key || payload.r2_key || payload.file_key;
+      const imageUrl = r2Key
+        ? `/api/files/download/${encodeURIComponent(String(r2Key))}`
+        : typeof payload.image_url === 'string'
+        ? payload.image_url
+        : null;
+
+      if (imageUrl) {
+        const created = addStudioImage({
+          title: trackedTask.title.replace(/^Image Synthesis:\s*/i, ''),
+          prompt: String((trackedTask.input_payload as any)?.prompt || prompt),
+          negativePrompt,
+          model,
+          aspectRatio,
+          resolution: upscale4x ? '1536 × 864' : '1024 × 576',
+          steps,
+          cfgScale,
+          seed: Number(payload.seed || Math.floor(10000000 + Math.random() * 90000000)),
+          upscaled4x: upscale4x,
+          bgRemoved: bgRemove,
+          imageUrl,
+        });
+        setSelectedImageId(created.id);
+        setStatusMessage(`Task ${trackedTask.id} completed on worker ${trackedTask.claimed_by_worker}. Rendered plate loaded from R2.`);
+      } else {
+        setStatusMessage(`Task ${trackedTask.id} completed, but no image artifact key was returned by worker.`);
+      }
+      setActiveTaskId(null);
+    } else if (trackedTask.status === 'failed') {
+      setStatusMessage(`Task ${trackedTask.id} failed: ${trackedTask.error_message || 'GPU worker error'}`);
+      setActiveTaskId(null);
+    }
+  }, [trackedTask]);
 
   const handleSynthesizeImage = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -78,22 +117,19 @@ export const ImageWorkspaceView: React.FC = () => {
 
     setIsGenerating(true);
     const presetObj = STYLE_PRESETS.find(p => p.id === selectedPreset) || STYLE_PRESETS[0];
-    const resolutionMap: Record<'16:9' | '4:3' | '1:1' | '9:16', string> = {
-      '16:9': upscale4x ? '1536 × 864' : '1024 × 576',
-      '4:3': upscale4x ? '1280 × 960' : '1024 × 768',
-      '1:1': upscale4x ? '2048 × 2048' : '1024 × 1024',
-      '9:16': upscale4x ? '864 × 1536' : '576 × 1024',
-    };
+    const fullPrompt = `${prompt.trim()}, ${presetObj.promptSuffix}`;
+    const minVramMb = model === 'sdxl-lightning' ? 10240 : 6144;
 
     try {
-      await submitTask({
+      const createdTask = await submitTask({
         agentId: 'agent_visual_synth',
         title: `Image Synthesis: ${prompt.slice(0, 42)}`,
         description: `Generate ${aspectRatio} frame with ${model}${upscale4x ? ' + Real-ESRGAN 4x' : ''}${bgRemove ? ' + BiRefNet' : ''}`,
         inputPayload: {
           workspace: 'image_generation',
+          task_type: 'image_synthesis',
           model,
-          prompt,
+          prompt: fullPrompt,
           negative_prompt: negativePrompt,
           aspect_ratio: aspectRatio,
           steps,
@@ -101,29 +137,53 @@ export const ImageWorkspaceView: React.FC = () => {
           upscale_4x: upscale4x,
           bg_remove: bgRemove,
           require_gpu: true,
+          min_vram_mb: minVramMb,
+          required_capability: 'image',
         },
         priority: 'medium',
-      }).catch(() => {});
-
-      const created = addStudioImage({
-        title: prompt.split(',')[0].slice(0, 48) || 'Studio Render',
-        prompt: `${prompt.trim()}, ${presetObj.promptSuffix}`,
-        negativePrompt,
-        model,
-        aspectRatio,
-        resolution: resolutionMap[aspectRatio],
-        steps,
-        cfgScale,
-        seed: Math.floor(10000000 + Math.random() * 90000000),
-        upscaled4x: upscale4x,
-        bgRemoved: bgRemove,
-        imageUrl: presetObj.fallbackImg,
       });
 
-      setSelectedImageId(created.id);
-      showNotification(`Frame synthesized via ${model}`, 'success');
+      setActiveTaskId(createdTask.id);
+      if (onlineWorkers.length === 0) {
+        setStatusMessage(
+          `Task ${createdTask.id} queued in Cloudflare D1 (${model}, requires ${minVramMb} MB VRAM). No GPU compute worker is currently online—connect your Kaggle T4×2 node to execute synthesis. No placeholder image was substituted.`
+        );
+      } else {
+        setStatusMessage(
+          `Task ${createdTask.id} dispatched to ${onlineWorkers.length} active GPU worker(s) for ${model} execution.`
+        );
+      }
     } finally {
       setIsGenerating(false);
+    }
+  };
+
+  const handleUploadReferencePlate = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setIsUploadingR2(true);
+    try {
+      const uploaded = await uploadFile(file);
+      const downloadUrl = `/api/files/download/${encodeURIComponent(uploaded.r2_key)}`;
+      const created = addStudioImage({
+        title: file.name.replace(/\.[^.]+$/, ''),
+        prompt: `Uploaded R2 studio plate (${uploaded.r2_key})`,
+        negativePrompt: '',
+        model: 'r2-direct-upload',
+        aspectRatio: '16:9',
+        resolution: 'Original R2 Asset',
+        steps: 1,
+        cfgScale: 1.0,
+        seed: 0,
+        upscaled4x: false,
+        bgRemoved: false,
+        imageUrl: downloadUrl,
+      });
+      setSelectedImageId(created.id);
+      setStatusMessage(`Uploaded '${file.name}' to Cloudflare R2 (${uploaded.r2_key}).`);
+    } finally {
+      setIsUploadingR2(false);
+      e.target.value = '';
     }
   };
 
@@ -154,7 +214,7 @@ export const ImageWorkspaceView: React.FC = () => {
             <span>/</span>
             <span className="text-slate-900 dark:text-slate-200 font-medium whitespace-nowrap">Image Generation</span>
             <span>·</span>
-            <span className="font-mono tabular-nums whitespace-nowrap">{studioImages.length} rendered plates</span>
+            <span className="font-mono tabular-nums whitespace-nowrap">{studioImages.length} studio plates</span>
           </div>
           <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
             Image Generation & Optical Processing Studio
@@ -165,6 +225,16 @@ export const ImageWorkspaceView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors cursor-pointer whitespace-nowrap shrink-0">
+            <Upload className="w-3.5 h-3.5 text-slate-500" />
+            <span>{isUploadingR2 ? 'Uploading to R2...' : 'Upload Plate to R2'}</span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={handleUploadReferencePlate}
+              className="hidden"
+            />
+          </label>
           <button
             onClick={() => setActiveTab('storyboard')}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-medium rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
@@ -182,6 +252,29 @@ export const ImageWorkspaceView: React.FC = () => {
         </div>
       </div>
 
+      {/* Honest Compute Status Banner */}
+      {(onlineWorkers.length === 0 || statusMessage || trackedTask) && (
+        <div className="p-3.5 rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/80 dark:bg-amber-950/30 flex items-start justify-between gap-3 text-xs text-amber-900 dark:text-amber-200">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              {statusMessage ? (
+                <span>{statusMessage}</span>
+              ) : (
+                <span>
+                  <strong className="font-semibold">Compute Grid Status:</strong> 0 active GPU workers online. Submitting an image synthesis request queues a verified task in Cloudflare D1 (`sdxl-lightning` / `sd-1.5-standard`) for execution when your Kaggle T4×2 worker connects.
+                </span>
+              )}
+            </div>
+          </div>
+          {trackedTask && (
+            <span className="px-2.5 py-1 rounded bg-blue-600 text-white font-mono text-[10px] shrink-0">
+              {trackedTask.status.toUpperCase()} ({trackedTask.progress_percent}%)
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Main Split Studio */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         {/* Left: Prompt & Pipeline Parameters (5 cols) */}
@@ -195,7 +288,7 @@ export const ImageWorkspaceView: React.FC = () => {
               <span>Synthesis Parameters</span>
             </div>
             <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">
-              VRAM Target: {model === 'sdxl-lightning' ? '10 GB' : '6 GB'}
+              VRAM Required: {model === 'sdxl-lightning' ? '10,240 MB' : '6,144 MB'}
             </span>
           </div>
 
@@ -367,12 +460,12 @@ export const ImageWorkspaceView: React.FC = () => {
             {isGenerating ? (
               <>
                 <RefreshCw className="w-4 h-4 animate-spin" />
-                <span>Synthesizing Plate...</span>
+                <span>Dispatching Synthesis Task...</span>
               </>
             ) : (
               <>
                 <Sparkles className="w-4 h-4" />
-                <span>Synthesize Image Plate</span>
+                <span>Dispatch Image Synthesis Task</span>
               </>
             )}
           </button>
@@ -448,10 +541,10 @@ export const ImageWorkspaceView: React.FC = () => {
           <div className="space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
               <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-                Rendered Studio Plates ({studioImages.length})
+                Studio Plates ({studioImages.length})
               </h3>
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                Click any plate to inspect or send to Storyboard
+                Select any plate to inspect or send to Storyboard
               </span>
             </div>
 

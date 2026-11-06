@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp, StoryboardShot } from '../../context/AppContext';
 import {
-  Clapperboard,
   Plus,
   Play,
   Pause,
@@ -9,11 +8,13 @@ import {
   ArrowDown,
   Trash2,
   Film,
-  Image as ImageIcon,
   Download,
   Camera,
-  Clock,
   Sparkles,
+  Cpu,
+  RefreshCw,
+  CheckCircle2,
+  AlertTriangle,
 } from 'lucide-react';
 
 const AVAILABLE_PLATES = [
@@ -32,6 +33,10 @@ export const StoryboardWorkspaceView: React.FC = () => {
     reorderStoryboardShot,
     addStudioVideo,
     uploadFile,
+    submitTask,
+    tasks,
+    workers,
+    files,
     setActiveTab,
     showNotification,
   } = useApp();
@@ -39,10 +44,55 @@ export const StoryboardWorkspaceView: React.FC = () => {
   const [selectedShotId, setSelectedShotId] = useState<string>(storyboardShots[0]?.id || '');
   const [isAnimaticPlaying, setIsAnimaticPlaying] = useState<boolean>(false);
   const [animaticIndex, setAnimaticIndex] = useState<number>(0);
+  const [isDispatchingPlateTask, setIsDispatchingPlateTask] = useState<boolean>(false);
+  const [activePlateTaskId, setActivePlateTaskId] = useState<string | null>(null);
+  const [syncedPlateTaskIds, setSyncedPlateTaskIds] = useState<Record<string, boolean>>({});
 
   const totalDuration = storyboardShots.reduce((acc, s) => acc + s.durationSec, 0);
   const activeShot: StoryboardShot | undefined =
     storyboardShots.find(s => s.id === selectedShotId) || storyboardShots[0];
+
+  const onlineStoryboardWorkers = workers.filter(
+    w =>
+      (w.status === 'online' || w.status === 'busy') &&
+      (w.vram_mb || (w.vram_total_gb || 0) * 1024) >= 8192
+  );
+
+  const activePlateTask = activePlateTaskId ? tasks.find(t => t.id === activePlateTaskId) : null;
+
+  // Bind completed worker storyboard plate synthesis to the active shot
+  useEffect(() => {
+    if (!activePlateTask || activePlateTask.status !== 'completed' || syncedPlateTaskIds[activePlateTask.id] || !activeShot) {
+      return;
+    }
+
+    let resultObj: Record<string, any> = {};
+    try {
+      resultObj =
+        typeof activePlateTask.result_payload === 'string'
+          ? JSON.parse(activePlateTask.result_payload)
+          : (activePlateTask.result_payload as Record<string, any>) || {};
+    } catch {
+      resultObj = {};
+    }
+
+    const artifactFileId = resultObj.file_id || resultObj.artifact_file_id;
+    const matchedR2File = artifactFileId ? files.find(f => f.id === artifactFileId) : undefined;
+    const imageUrl =
+      resultObj.image_url ||
+      resultObj.data_url ||
+      (matchedR2File ? `/api/files/${matchedR2File.id}/download` : null);
+
+    setSyncedPlateTaskIds(prev => ({ ...prev, [activePlateTask.id]: true }));
+    if (imageUrl) {
+      updateStoryboardShot({
+        ...activeShot,
+        imageUrl,
+        status: 'ready',
+      });
+      showNotification(`Updated Shot #${activeShot.shotNumber} with rendered GPU plate`, 'success');
+    }
+  }, [activePlateTask, syncedPlateTaskIds, activeShot, files, updateStoryboardShot, showNotification]);
 
   // Sequential Animatic Player
   useEffect(() => {
@@ -83,6 +133,45 @@ export const StoryboardWorkspaceView: React.FC = () => {
     showNotification(`Added Shot #${created.shotNumber} to storyboard`, 'success');
   };
 
+  const handleDispatchShotPlateRender = async (shot: StoryboardShot) => {
+    setIsDispatchingPlateTask(true);
+    try {
+      const task = await submitTask({
+        agentId: 'agent_storyboard',
+        title: `Storyboard Shot #${shot.shotNumber} Plate: ${shot.title}`,
+        description: `${shot.sceneHeading} — ${shot.visualPrompt}`,
+        inputPayload: {
+          workspace: 'storyboard',
+          model: 'sdxl-lightning',
+          shot_id: shot.id,
+          shot_number: shot.shotNumber,
+          scene_heading: shot.sceneHeading,
+          visual_prompt: shot.visualPrompt,
+          lens: shot.lens,
+          camera_angle: shot.cameraAngle,
+          aspect_ratio: shot.aspectRatio,
+          require_gpu: true,
+          min_vram_mb: 8192,
+          required_capability: 'image',
+        },
+        priority: 'high',
+      });
+      setActivePlateTaskId(task.id);
+      if (onlineStoryboardWorkers.length === 0) {
+        showNotification(
+          `Storyboard plate task ${task.id.slice(0, 12)} queued in D1. Waiting for an online GPU worker (≥8 GB VRAM).`,
+          'info'
+        );
+      } else {
+        showNotification(`Dispatched Shot #${shot.shotNumber} plate render to GPU worker grid`, 'success');
+      }
+    } catch (err: any) {
+      showNotification(err?.message || 'Failed to dispatch storyboard plate task', 'error');
+    } finally {
+      setIsDispatchingPlateTask(false);
+    }
+  };
+
   const handleExportStoryboardToR2 = async () => {
     const payload = JSON.stringify(
       {
@@ -109,7 +198,7 @@ export const StoryboardWorkspaceView: React.FC = () => {
       ...shot,
       imageUrl: nextPlate.url,
     });
-    showNotification(`Updated Shot #${shot.shotNumber} visual plate`, 'info');
+    showNotification(`Switched Shot #${shot.shotNumber} reference plate`, 'info');
   };
 
   const handleSendShotToVideo = (shot: StoryboardShot) => {
@@ -153,6 +242,21 @@ export const StoryboardWorkspaceView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-mono ${
+              onlineStoryboardWorkers.length > 0
+                ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300'
+                : 'border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300'
+            }`}
+          >
+            <Cpu className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              {onlineStoryboardWorkers.length > 0
+                ? `${onlineStoryboardWorkers.length} GPU Worker Ready`
+                : 'Queue Mode'}
+            </span>
+          </div>
+
           <button
             onClick={() => {
               if (!isAnimaticPlaying) {
@@ -188,6 +292,41 @@ export const StoryboardWorkspaceView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {activePlateTask && (
+        <div
+          className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+            activePlateTask.status === 'completed'
+              ? 'border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/60 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-200'
+              : activePlateTask.status === 'failed'
+              ? 'border-rose-200 dark:border-rose-900/50 bg-rose-50/60 dark:bg-rose-950/30 text-rose-800 dark:text-rose-200'
+              : 'border-blue-200 dark:border-blue-900/50 bg-blue-50/60 dark:bg-blue-950/30 text-blue-800 dark:text-blue-200'
+          }`}
+        >
+          <div className="flex items-center gap-2.5">
+            {activePlateTask.status === 'completed' ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+            ) : activePlateTask.status === 'failed' ? (
+              <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+            ) : (
+              <RefreshCw className="w-4 h-4 shrink-0 animate-spin text-blue-600" />
+            )}
+            <div>
+              <div className="font-semibold">
+                {activePlateTask.title} — <span className="font-mono uppercase">{activePlateTask.status}</span>
+              </div>
+              <div className="text-[11px] opacity-85 mt-0.5">
+                {activePlateTask.status === 'queued' && onlineStoryboardWorkers.length === 0
+                  ? 'Task persisted in Cloudflare D1. Waiting for an online GPU worker with ≥8 GB VRAM to render the shot plate.'
+                  : activePlateTask.error_message ||
+                    activePlateTask.progress_stage ||
+                    `Assigned worker: ${activePlateTask.claimed_by_worker || activePlateTask.worker_id || 'awaiting claim'}`}
+              </div>
+            </div>
+          </div>
+          <span className="font-mono text-[11px] opacity-75 shrink-0">{activePlateTask.id}</span>
+        </div>
+      )}
 
       {/* Animatic Monitor & Active Shot Inspector */}
       {activeShot && (
@@ -226,18 +365,25 @@ export const StoryboardWorkspaceView: React.FC = () => {
 
               <div className="flex flex-wrap items-center gap-2">
                 <button
+                  onClick={() => handleDispatchShotPlateRender(activeShot)}
+                  disabled={isDispatchingPlateTask}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50/80 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100/80 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>{isDispatchingPlateTask ? 'Dispatching...' : 'Render Shot Plate (GPU)'}</span>
+                </button>
+                <button
                   onClick={() => handleCycleShotPlate(activeShot)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 transition-colors"
                 >
-                  <Sparkles className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
-                  <span>Cycle Plate</span>
+                  <span>Cycle Reference</span>
                 </button>
                 <button
                   onClick={() => handleSendShotToVideo(activeShot)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold transition-colors"
                 >
                   <Film className="w-3.5 h-3.5" />
-                  <span>Animate Shot in Video Studio</span>
+                  <span>Animate in Video Studio</span>
                 </button>
               </div>
             </div>
