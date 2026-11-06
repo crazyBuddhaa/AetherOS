@@ -13,6 +13,7 @@ import { ImageWorkspaceView } from './components/workspaces/ImageWorkspaceView';
 import { VideoWorkspaceView } from './components/workspaces/VideoWorkspaceView';
 import { StoryboardWorkspaceView } from './components/workspaces/StoryboardWorkspaceView';
 import { ScreenwriterWorkspaceView } from './components/workspaces/ScreenwriterWorkspaceView';
+import { WebIntelligenceView } from './components/intelligence/WebIntelligenceView';
 import { ChatView } from './components/chat/ChatView';
 import { AgentsView } from './components/agents/AgentsView';
 import { TasksView } from './components/tasks/TasksView';
@@ -79,6 +80,7 @@ const AppContent: React.FC = () => {
           {activeTab === 'video' && <VideoWorkspaceView />}
           {activeTab === 'storyboard' && <StoryboardWorkspaceView />}
           {activeTab === 'screenwriter' && <ScreenwriterWorkspaceView />}
+          {activeTab === 'web_intelligence' && <WebIntelligenceView />}
           {activeTab === 'chat' && (
             <ChatView onConvertMessageToTask={handleConvertChatToTask} />
           )}

@@ -28,6 +28,7 @@ export type NavTab =
   | 'video'
   | 'storyboard'
   | 'screenwriter'
+  | 'web_intelligence'
   | 'chat'
   | 'agents'
   | 'tasks'

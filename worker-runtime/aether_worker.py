@@ -1172,6 +1172,30 @@ class TaskExecutor:
             logger.info(f"Completed hardware diagnostic task '{task_id}'.")
             return
 
+        if task_type == "web_intelligence" or task.get("agent_id") == "agent_web_intelligence":
+            target = str(input_payload.get("target") or input_payload.get("url") or input_payload.get("domain") or "").strip()
+            self.client.update_progress(
+                task_id,
+                1,
+                "Web Reconnaissance & Evidence Ingestion",
+                "running",
+                f"Worker analyzing target '{target}'...",
+                30,
+            )
+            # If the platform already executed or attached structured report, synthesize report with local model
+            report_data = input_payload.get("report") or {}
+            target_summary = f"Website target: {target}. Status: {report_data.get('investigation_status', 'evaluated')}."
+            synthesis_prompt = (
+                f"You are AetherEye Web Intelligence Agent. Review the website reconnaissance evidence:\n"
+                f"{json.dumps(report_data, indent=2) if report_data else target_summary}\n\n"
+                f"Provide concise, evidence-based technical intelligence regarding domain infrastructure, "
+                f"technology stack, and passive security observations. Never invent findings."
+            )
+            # Fall through to inference engine with prepared prompt if model weights loaded, or complete directly
+            input_payload["prompt"] = synthesis_prompt
+            input_payload["require_gpu"] = False
+
+
         # Standard local LLM inference workflow
         requested_model = input_payload.get("model") or task.get("model") or "qwen-2.5-coder-14b"
         requested_precision = input_payload.get("precision")

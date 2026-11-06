@@ -762,6 +762,22 @@ class ApiClient {
     const data = await this.request<{ success: boolean; events: any[] }>('/api/security/events');
     return data.events || [];
   }
+
+  // --- WEB INTELLIGENCE AGENT (AetherEye) ---
+  async investigateWebTarget(params: {
+    target: string;
+    timeout_ms?: number;
+  }): Promise<{
+    success: boolean;
+    report: any;
+    report_file_id?: string;
+    artifacts: { json_key: string };
+  }> {
+    return this.request('/api/intelligence/investigate', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
 }
 
 export const apiClient = new ApiClient();

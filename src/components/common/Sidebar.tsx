@@ -17,6 +17,7 @@ import {
   Sliders,
   Sun,
   Moon,
+  Globe,
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
@@ -58,6 +59,7 @@ export const Sidebar: React.FC = () => {
     category: 'all' | 'engineering' | 'infrastructure';
     icon: React.ComponentType<{ className?: string }>;
   }> = [
+    { id: 'web_intelligence', label: 'Web Intelligence', category: 'engineering', icon: Globe },
     { id: 'chat', label: 'Agent Chat', category: 'engineering', icon: MessageSquare },
     { id: 'tasks', label: 'Task Queue', badge: stats.running_tasks || undefined, category: 'engineering', icon: Workflow },
     { id: 'compute', label: 'Compute Grid', category: 'infrastructure', icon: Cpu },

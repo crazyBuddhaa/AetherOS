@@ -34,6 +34,13 @@ AetherOS is an operational distributed AI agent, creative studio, and defensive 
    - Performs read-only HTTP security-header analysis, TLS transport checks, DNS SPF/DMARC/CAA verification via Cloudflare DoH, dependency vulnerability auditing (`package.json`), and static source-code / configuration security scanning.
    - Clearly separates `verified_finding` from `unverified_indicator` and archives Markdown + JSON reports in Cloudflare R2.
 
+6. **Web Intelligence & Domain Reconnaissance Agent (`agent_web_intelligence` / `worker/web-intelligence.ts`)**
+   - **Autonomous Reconnaissance**: Real-world HTTP content retrieval with SSRF safety, HTML metadata and SEO analysis, link structure discovery, and sitemap/robots.txt parsing.
+   - **DNS-over-HTTPS & Domain Intelligence**: Queries Cloudflare 1.1.1.1 DoH for A, AAAA, MX, TXT, NS, CAA, and DMARC records to evaluate infrastructure posture.
+   - **Technology Stack Fingerprinting**: Identifies server headers, frameworks (React, Next.js, Vue, Tailwind CSS, WordPress), CDNs (Cloudflare, Fastly, Vercel), and analytics.
+   - **Passive Security Inspection**: Analyzes HTTPS availability, security headers, cookie flags (Secure, HttpOnly, SameSite), and common web misconfigurations.
+   - **Evidence & Reporting**: Separates verified findings from unverified indicators, archives structured JSON findings in Cloudflare R2, and integrates with the Kaggle inference runtime.
+
 ---
 
 ## Development & Verification Commands

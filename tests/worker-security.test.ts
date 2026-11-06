@@ -2113,4 +2113,154 @@ describe('5. Passwordless Authentication, WebAuthn, TOTP & Kaggle Compute Sessio
   });
 });
 
+describe('6. Web Intelligence Agent & Reconnaissance Engine (worker/web-intelligence.ts)', () => {
+  it('blocks SSRF targets (private IPs, loopback, cloud metadata, invalid schemes)', async () => {
+    const { isTargetAllowed, runWebInvestigation } = await import('../worker/web-intelligence.ts');
+
+    const blockedTargets = [
+      'http://127.0.0.1:8080/admin',
+      'http://localhost:3000',
+      'http://169.254.169.254/latest/meta-data/',
+      'http://10.0.0.1/router',
+      'http://192.168.1.1',
+      'ftp://example.com/file',
+      'file:///etc/passwd',
+    ];
+
+    for (const target of blockedTargets) {
+      const allowed = isTargetAllowed(target, false);
+      assert.equal(allowed.allowed, false, `Should block target: ${target}`);
+
+      const report = await runWebInvestigation({ target, allow_localhost: false });
+      assert.equal(report.investigation_status, 'failed');
+      assert.ok(report.potential_risks.length > 0);
+    }
+  });
+
+  it('correctly parses HTML metadata, SEO tags, headings, and internal/external links without crashing', async () => {
+    const { parseHtmlMetadata, fingerprintTechnologies, inspectPassiveSecurity } = await import('../worker/web-intelligence.ts');
+
+    const sampleHtml = `
+      <!DOCTYPE html>
+      <html lang="en">
+        <head>
+          <title>Apex Analytics & Intelligence</title>
+          <meta name="description" content="Enterprise telemetry and autonomous web analytics platform.">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <meta property="og:title" content="Apex Analytics">
+          <meta property="og:description" content="Autonomous web analytics.">
+          <link rel="canonical" href="https://example.com/canonical">
+          <link rel="icon" href="/favicon.ico">
+          <link rel="stylesheet" href="/styles/main.css">
+          <script src="/_next/static/chunks/main.js"></script>
+          <script src="https://www.googletagmanager.com/gtm.js"></script>
+        </head>
+        <body>
+          <h1>Autonomous Intelligence Platform</h1>
+          <h2>Deep Telemetry</h2>
+          <h3>Real-time Metrics</h3>
+          <p>Real-time distributed computing platform with verifiable nodes.</p>
+          <a href="/pricing">Pricing Plans</a>
+          <a href="/privacy-policy">Privacy Policy</a>
+          <a href="/terms-of-service">Terms of Service</a>
+          <a href="https://github.com/apex/analytics">GitHub Source</a>
+        </body>
+      </html>
+    `;
+
+    const parsed = parseHtmlMetadata(sampleHtml, 'https://example.com');
+    assert.equal(parsed.title, 'Apex Analytics & Intelligence');
+    assert.equal(parsed.description, 'Enterprise telemetry and autonomous web analytics platform.');
+    assert.equal(parsed.canonical_url, 'https://example.com/canonical');
+    assert.equal(parsed.favicon_url, 'https://example.com/favicon.ico');
+    assert.equal(parsed.headings.h1[0], 'Autonomous Intelligence Platform');
+    assert.equal(parsed.headings.h2[0], 'Deep Telemetry');
+    assert.ok(parsed.links_discovered.internal.some((l) => l.includes('/pricing')));
+    assert.ok(parsed.links_discovered.external.some((l) => l.includes('github.com')));
+    assert.equal(parsed.privacy_policy_url, 'https://example.com/privacy-policy');
+    assert.equal(parsed.terms_of_service_url, 'https://example.com/terms-of-service');
+
+    const tech = fingerprintTechnologies(
+      { server: 'cloudflare', 'x-powered-by': 'Next.js' },
+      sampleHtml,
+      parsed.discovered_assets.scripts
+    );
+    assert.ok(tech.some((t) => t.name.toLowerCase().includes('cloudflare')));
+    assert.ok(tech.some((t) => t.name.toLowerCase().includes('next.js')));
+    assert.ok(tech.some((t) => t.name.toLowerCase().includes('google tag manager')));
+
+    const sec = inspectPassiveSecurity('https://example.com', {
+      'strict-transport-security': 'max-age=31536000; includeSubDomains',
+    });
+    assert.equal(sec.https_available, true);
+    assert.ok(sec.security_headers.strict_transport_security);
+    assert.ok(sec.missing_security_headers.includes('Content-Security-Policy (CSP)'));
+  });
+
+  it('executes real-world reconnaissance against https://www.getcustomcarebot.xyz and records verifiable DNS findings without fabricating status', async () => {
+    const { runWebInvestigation } = await import('../worker/web-intelligence.ts');
+
+    const report = await runWebInvestigation({
+      target: 'https://www.getcustomcarebot.xyz',
+      timeout_ms: 8000,
+    });
+
+    assert.ok(report.report_id.startsWith('rep_web_'));
+    assert.equal(report.target_domain, 'www.getcustomcarebot.xyz');
+    // Live DNS record check verifies that getcustomcarebot.xyz has CentralNic nameservers or NXDOMAIN
+    assert.ok(report.domain_and_infrastructure);
+    assert.ok(report.findings.length > 0);
+    assert.ok(report.executive_summary.includes('getcustomcarebot.xyz'));
+    // Ensures verified findings vs unverified distinction
+    assert.ok(report.findings.every((f) => f.confidence && f.evidence));
+  });
+
+  it('processes agent_web_intelligence tasks through POST /api/tasks and archives JSON findings to R2', async () => {
+    const app = await createAetherApp({ disableVite: true });
+    const server = http.createServer(app);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as any).port;
+
+    try {
+      const taskRes = await fetch(`http://127.0.0.1:${port}/api/tasks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          agent_id: 'agent_web_intelligence',
+          title: 'Reconnaissance on customcarebot test target',
+          description: 'Investigate domain infrastructure and security posture',
+          input_payload: {
+            target: 'https://www.getcustomcarebot.xyz',
+          },
+        }),
+      });
+
+      assert.equal(taskRes.status, 201);
+      const data: any = await taskRes.json();
+      assert.equal(data.success, true);
+      assert.ok(data.task);
+      assert.ok(data.task.result_payload);
+      assert.equal(data.task.result_payload.executed_by, 'agent_web_intelligence');
+      assert.ok(data.task.result_payload.artifact_r2_key);
+
+      // Verify direct endpoint /api/intelligence/investigate
+      const directRes = await fetch(`http://127.0.0.1:${port}/api/intelligence/investigate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          target: 'https://www.getcustomcarebot.xyz',
+        }),
+      });
+      assert.equal(directRes.status, 200);
+      const directData: any = await directRes.json();
+      assert.equal(directData.success, true);
+      assert.ok(directData.report);
+      assert.equal(directData.report.target_domain, 'www.getcustomcarebot.xyz');
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+
 

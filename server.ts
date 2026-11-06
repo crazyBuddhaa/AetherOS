@@ -35,6 +35,7 @@ import {
   SECURITY_RESPONSE_HEADERS,
 } from './worker/auth.ts';
 import { runDefensiveSecurityAssessment } from './worker/cybersecurity.ts';
+import { runWebInvestigation } from './worker/web-intelligence.ts';
 import type {
   ActivityLog,
   Agent,
@@ -164,6 +165,20 @@ function createInitialAgents(): Agent[] {
       permitted_tools: ['fountain_formatter', 'r2_artifact_upload'],
       is_enabled: true,
       avatar_color: '#059669',
+      created_at: now,
+      updated_at: now,
+    },
+    {
+      id: 'agent_web_intelligence',
+      name: 'AetherEye (Web Intelligence & OSINT Specialist)',
+      description: 'Autonomous live website reconnaissance, content extraction, SEO/metadata analysis, technology stack fingerprinting, DNS/DoH intelligence, and passive security inspection.',
+      model: 'qwen-2.5-coder-14b',
+      system_instructions: 'You are AetherEye, the principal Web Intelligence Agent for AetherOS. Formulate evidence-based reconnaissance from real HTTP, DNS, and TLS observations.',
+      temperature: 0.2,
+      max_tokens: 8192,
+      permitted_tools: ['web_fetcher', 'domain_intelligence', 'passive_security_inspection', 'technology_fingerprinting', 'r2_report_archiver'],
+      is_enabled: true,
+      avatar_color: '#0284C7',
       created_at: now,
       updated_at: now,
     },
@@ -2145,6 +2160,63 @@ export async function createAetherApp(options: { disableVite?: boolean; persistP
     });
   });
 
+  // ==========================================
+  // 1.8 Web Intelligence & Domain Reconnaissance API
+  // ==========================================
+  app.post('/api/intelligence/investigate', async (req: Request, res: Response) => {
+    const auth = getSessionUserFromReq(req);
+    const body = req.body || {};
+    const target = String(body.target || body.url || body.domain || '').trim();
+
+    if (!target) {
+      res.status(400).json({ success: false, error: 'Target URL or domain is required' });
+      return;
+    }
+
+    const report = await runWebInvestigation({
+      target,
+      allow_localhost: process.env.NODE_ENV !== 'production',
+      timeout_ms: typeof body.timeout_ms === 'number' ? body.timeout_ms : 12000,
+    });
+
+    const now = new Date().toISOString();
+    const jsonKey = `reports/intelligence/${report.report_id}.json`;
+    const jsonBuffer = Buffer.from(JSON.stringify(report, null, 2), 'utf-8');
+
+    filesMap.set(jsonKey, {
+      key: jsonKey,
+      filename: `${report.report_id}.json`,
+      contentType: 'application/json',
+      size: jsonBuffer.length,
+      etag: `w/"${crypto.createHash('md5').update(jsonBuffer).digest('hex').slice(0, 12)}"`,
+      uploaded: now,
+      storageClass: 'Standard',
+      buffer: jsonBuffer,
+    });
+
+    const fileId = generateSecureId('file');
+    fileMetadataList.unshift({
+      id: fileId,
+      r2_key: jsonKey,
+      filename: `${report.report_id}.json`,
+      mime_type: 'application/json',
+      size_bytes: jsonBuffer.length,
+      etag: `w/"${crypto.createHash('md5').update(jsonBuffer).digest('hex').slice(0, 12)}"`,
+      uploaded_by: auth?.user?.id || 'usr_admin',
+      storage_class: 'Standard',
+      created_at: now,
+    });
+
+    res.json({
+      success: true,
+      report,
+      report_file_id: fileId,
+      artifacts: {
+        json_key: jsonKey,
+      },
+    });
+  });
+
   app.get('/api/security/events', (_req: Request, res: Response) => {
     res.json({ success: true, events: securityEvents.slice(0, 50) });
   });
@@ -2374,6 +2446,64 @@ export async function createAetherApp(options: { disableVite?: boolean; persistP
         res.status(secOutcome.status).json({ success: false, error: secOutcome.error, task: createdTask });
         return;
       }
+    }
+
+    // Native Web Intelligence & Domain Reconnaissance Agent execution path
+    if (
+      body.agent_id === 'agent_web_intelligence' ||
+      inputPayload.workspace === 'web_intelligence' ||
+      inputPayload.task_type === 'web_intelligence'
+    ) {
+      const target = String(
+        inputPayload.target || inputPayload.target_url || inputPayload.url || inputPayload.domain || body.description || ''
+      ).trim();
+
+      if (!target) {
+        createdTask.status = 'failed';
+        createdTask.error_message = 'Target URL or domain is required';
+        createdTask.completed_at = new Date().toISOString();
+        savePersistedState();
+        res.status(400).json({ success: false, error: 'Target URL or domain is required', task: createdTask });
+        return;
+      }
+
+      const report = await runWebInvestigation({
+        target,
+        allow_localhost: process.env.NODE_ENV !== 'production',
+        timeout_ms: typeof inputPayload.timeout_ms === 'number' ? inputPayload.timeout_ms : 12000,
+      });
+
+      const jsonKey = `reports/intelligence/${report.report_id}.json`;
+      const jsonBuffer = Buffer.from(JSON.stringify(report, null, 2), 'utf-8');
+
+      filesMap.set(jsonKey, {
+        key: jsonKey,
+        filename: `${report.report_id}.json`,
+        contentType: 'application/json',
+        size: jsonBuffer.length,
+        etag: `w/"${crypto.createHash('md5').update(jsonBuffer).digest('hex').slice(0, 12)}"`,
+        uploaded: now,
+        storageClass: 'Standard',
+        task_id: taskId,
+        buffer: jsonBuffer,
+      });
+
+      createdTask.status = report.investigation_status === 'failed' ? 'failed' : 'completed';
+      createdTask.progress_percent = report.investigation_status === 'failed' ? 0 : 100;
+      createdTask.completed_at = new Date().toISOString();
+      createdTask.result_payload = {
+        output: report.executive_summary,
+        report,
+        artifact_r2_key: jsonKey,
+        executed_by: 'agent_web_intelligence',
+      };
+      if (report.failure_reason) {
+        createdTask.error_message = report.failure_reason;
+      }
+
+      savePersistedState();
+      res.status(201).json({ success: true, task: createdTask, report });
+      return;
     }
 
     addLog({

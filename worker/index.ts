@@ -39,6 +39,7 @@ import {
   SECURITY_RESPONSE_HEADERS,
 } from './auth.ts';
 import { runDefensiveSecurityAssessment } from './cybersecurity.ts';
+import { runWebInvestigation } from './web-intelligence.ts';
 
 const VALID_PROVIDERS = new Set(['kaggle', 'oracle', 'runpod', 'self_hosted', 'custom']);
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50 MB limit
@@ -1578,6 +1579,75 @@ export default {
           });
         }
 
+        // ==========================================
+        // 1.8 Web Intelligence & Domain Reconnaissance API
+        // ==========================================
+        if (url.pathname === '/api/intelligence/investigate' && request.method === 'POST') {
+          const auth = await getSessionUser(request);
+          const parsed = await parseJsonBody(request);
+          if (!parsed.ok) return errorResponse(parsed.error, 400);
+          const body = parsed.body;
+
+          const target = String(body.target || body.url || body.domain || '').trim();
+          if (!target) {
+            return errorResponse('Target URL or domain is required for web intelligence investigation', 400);
+          }
+
+          const report = await runWebInvestigation({
+            target,
+            allow_localhost: env.ENVIRONMENT === 'development',
+            timeout_ms: typeof body.timeout_ms === 'number' ? body.timeout_ms : 12000,
+          });
+
+          const jsonKey = `reports/intelligence/${report.report_id}.json`;
+          let reportFileId: string | undefined;
+
+          try {
+            const jsonBytes = new TextEncoder().encode(JSON.stringify(report, null, 2)).buffer;
+            const r2Obj = await r2.uploadFile(jsonKey, jsonBytes, {
+              contentType: 'application/json',
+              customMetadata: {
+                report_id: report.report_id,
+                target: report.target_url,
+                domain: report.target_domain,
+              },
+            });
+            reportFileId = generateSecureId('file');
+            await db.recordFileMetadata({
+              id: reportFileId,
+              r2_key: r2Obj.key,
+              filename: `${report.report_id}.json`,
+              mime_type: 'application/json',
+              size_bytes: r2Obj.size,
+              etag: r2Obj.etag,
+              uploaded_by: auth?.user?.id || 'usr_admin',
+              storage_class: 'Standard',
+            });
+          } catch {}
+
+          await db.logActivity({
+            user_id: auth?.user?.id,
+            action: 'web_intelligence_investigation_completed',
+            category: 'system',
+            details: {
+              report_id: report.report_id,
+              target: report.target_url,
+              status: report.investigation_status,
+              r2_key: jsonKey,
+            },
+          });
+
+          return json({
+            success: true,
+            report,
+            report_file_id: reportFileId,
+            artifacts: {
+              json_key: jsonKey,
+            },
+          });
+        }
+
+
         if (url.pathname === '/api/security/events' && request.method === 'GET') {
           const events = await db.getSecurityEvents(50);
           return json({ success: true, events });
@@ -1745,6 +1815,71 @@ export default {
               if (refreshed) createdTask = refreshed;
               return json({ success: false, error: secOutcome.error, task: createdTask }, secOutcome.status);
             }
+          }
+
+          // Native Web Intelligence & Domain Reconnaissance Agent execution path
+          if (
+            body.agent_id === 'agent_web_intelligence' ||
+            inputPayload.workspace === 'web_intelligence' ||
+            inputPayload.task_type === 'web_intelligence'
+          ) {
+            const target = String(
+              inputPayload.target || inputPayload.target_url || inputPayload.url || inputPayload.domain || body.description || ''
+            ).trim();
+
+            if (!target) {
+              await db.updateTaskStatus(taskId, 'failed', 0, undefined, 'Target URL or domain is required');
+              const refreshed = await db.getTaskWithSteps(taskId);
+              return json({ success: false, error: 'Target URL or domain is required', task: refreshed || createdTask }, 400);
+            }
+
+            const report = await runWebInvestigation({
+              target,
+              allow_localhost: env.ENVIRONMENT === 'development',
+              timeout_ms: typeof inputPayload.timeout_ms === 'number' ? inputPayload.timeout_ms : 12000,
+            });
+
+            const jsonKey = `reports/intelligence/${report.report_id}.json`;
+            try {
+              const jsonBytes = new TextEncoder().encode(JSON.stringify(report, null, 2)).buffer;
+              const r2Obj = await r2.uploadFile(jsonKey, jsonBytes, {
+                contentType: 'application/json',
+                customMetadata: {
+                  task_id: taskId,
+                  report_id: report.report_id,
+                  target: report.target_url,
+                  domain: report.target_domain,
+                },
+              });
+              await db.recordFileMetadata({
+                id: generateSecureId('file'),
+                r2_key: r2Obj.key,
+                filename: `${report.report_id}.json`,
+                mime_type: 'application/json',
+                size_bytes: r2Obj.size,
+                etag: r2Obj.etag,
+                uploaded_by: effectiveUserId,
+                task_id: taskId,
+                storage_class: 'Standard',
+              });
+            } catch {}
+
+            await db.updateTaskStatus(
+              taskId,
+              report.investigation_status === 'failed' ? 'failed' : 'completed',
+              report.investigation_status === 'failed' ? 0 : 100,
+              {
+                output: report.executive_summary,
+                report,
+                artifact_r2_key: jsonKey,
+                executed_by: 'agent_web_intelligence',
+              },
+              report.failure_reason
+            );
+
+            const refreshed = await db.getTaskWithSteps(taskId);
+            if (refreshed) createdTask = refreshed;
+            return json({ success: true, task: createdTask, report }, 201);
           }
 
           try {
