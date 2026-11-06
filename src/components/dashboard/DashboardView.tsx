@@ -1,38 +1,52 @@
 import React from 'react';
-import { useApp } from '../../context/AppContext';
+import { useApp, NavTab, SettingsModuleId, SituationalPreset } from '../../context/AppContext';
 import { StatusBadge, RiskBadge } from '../common/StatusBadge';
-import { 
-  Bot, 
-  Workflow, 
-  ShieldAlert, 
-  HardDrive, 
-  ArrowRight, 
-  Plus, 
-  CheckCircle2, 
-  Clock, 
-  Cpu, 
-  Sparkles 
+import {
+  Code2,
+  Image as ImageIcon,
+  Film,
+  Clapperboard,
+  Feather,
+  MessageSquare,
+  Bot,
+  Workflow,
+  ShieldAlert,
+  HardDrive,
+  ArrowRight,
+  Plus,
+  CheckCircle2,
+  Cpu,
+  Sliders,
+  Server,
+  Cloud,
+  Fingerprint,
+  FileCode,
 } from 'lucide-react';
 
 export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewTaskClick }) => {
-  const { 
-    agents, 
-    tasks, 
-    approvals, 
-    files, 
-    logs, 
-    stats, 
-    runtimeConfig, 
-    setActiveTab, 
+  const {
+    agents,
+    tasks,
+    approvals,
+    stats,
+    runtimeConfig,
+    storyboardShots,
+    studioImages,
+    studioVideos,
+    screenplayScenes,
+    situationalMode,
+    setSituationalMode,
+    setActiveTab,
+    setActiveSettingsModule,
     setSelectedTaskId,
     setSelectedAgentId,
     pingRuntime,
     decideApproval,
   } = useApp();
 
-
   const pendingApprovals = approvals.filter(a => a.status === 'pending');
-  const runningTasks = tasks.filter(t => t.status === 'running' || t.status === 'waiting_approval');
+  const runningTasks = tasks.filter(t => t.status === 'running' || t.status === 'waiting_approval' || t.status === 'queued' || t.status === 'assigned');
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -41,153 +55,316 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
+  const studioWorkspaces: Array<{
+    id: NavTab;
+    title: string;
+    category: 'engineering' | 'creative';
+    modelLabel: string;
+    metricText: string;
+    description: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
+    {
+      id: 'code',
+      title: 'Code Generation',
+      category: 'engineering',
+      modelLabel: 'qwen-2.5-coder-14b',
+      metricText: 'TypeScript · SQL · Python',
+      description: 'Synthesize Cloudflare Workers, D1 SQLite migrations, and PyTorch GPU modules in a split IDE.',
+      icon: Code2,
+    },
+    {
+      id: 'image',
+      title: 'Image Generation',
+      category: 'creative',
+      modelLabel: 'sdxl-lightning',
+      metricText: `${studioImages.length} studio plates`,
+      description: 'High-resolution diffusion synthesis with Real-ESRGAN 4x upscaling and BiRefNet alpha extraction.',
+      icon: ImageIcon,
+    },
+    {
+      id: 'video',
+      title: 'Video Generation',
+      category: 'creative',
+      modelLabel: 'animatediff-motion-v3',
+      metricText: `${studioVideos.length} motion clips`,
+      description: 'Keyframe-conditioned temporal motion synthesis with camera rig trajectories and frame scrubbing.',
+      icon: Film,
+    },
+    {
+      id: 'storyboard',
+      title: 'Storyboard Studio',
+      category: 'creative',
+      modelLabel: 'deepseek-r1-distill-qwen-14b',
+      metricText: `${storyboardShots.length} sequential shots`,
+      description: 'Sequential visual narrative planning, lens & camera continuity, and animatic playback.',
+      icon: Clapperboard,
+    },
+    {
+      id: 'screenwriter',
+      title: 'Screenwriter',
+      category: 'creative',
+      modelLabel: 'deepseek-r1-distill-qwen-14b',
+      metricText: `${screenplayScenes.length} script scenes`,
+      description: 'Fountain screenplay authoring, AI dramaturg beat expansion, and 1-click shot extraction.',
+      icon: Feather,
+    },
+    {
+      id: 'chat',
+      title: 'Agent Chat Console',
+      category: 'engineering',
+      modelLabel: 'Multi-Agent Fleet',
+      metricText: `${stats.active_agents} active agents`,
+      description: 'Interactive multi-turn reasoning console with live chain-of-thought and artifact canvas.',
+      icon: MessageSquare,
+    },
+  ];
+
+  const filteredWorkspaces = studioWorkspaces.filter(w => {
+    if (situationalMode === 'creative') return w.category === 'creative';
+    if (situationalMode === 'engineering') return w.category === 'engineering' || w.id === 'code';
+    return true;
+  });
+
+  const settingsModulesShortcut: Array<{
+    id: SettingsModuleId;
+    title: string;
+    meta: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }> = [
+    { id: 'workspace_appearance', title: '01. Workspace & Theme', meta: 'Light Primary · Presets', icon: Sliders },
+    { id: 'compute_kaggle', title: '02. Compute & Kaggle', meta: 'Dual T4 · Session Control', icon: Server },
+    { id: 'inference_models', title: '03. Inference & Models', meta: '8 Multimodal Profiles', icon: Cpu },
+    { id: 'cloudflare_edge', title: '04. Cloudflare Edge', meta: 'Workers · D1 · R2', icon: Cloud },
+    { id: 'identity_security', title: '05. Identity & Passkeys', meta: 'WebAuthn · TOTP', icon: Fingerprint },
+    { id: 'deployment_cicd', title: '06. Deployment & CI/CD', meta: 'Wrangler · GitHub Actions', icon: FileCode },
+  ];
+
   return (
     <div className="space-y-8 pb-12">
-      {/* Top Welcome / Header Banner */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      {/* Top Header & Situational Mode Filter */}
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-200 dark:border-slate-800">
         <div>
+          <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400 mb-1">
+            <span>AetherOS Studio</span>
+            <span>·</span>
+            <span>Cloudflare Workers + D1 + R2</span>
+            <span>·</span>
+            <span>Distributed GPU Grid</span>
+          </div>
           <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-white">
-            Platform Overview
+            Modular Studio Workspaces
           </h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-            Autonomous agent operations, task execution traces, and human authorization queue.
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            Dedicated environments for code generation, image synthesis, video motion, storyboarding, and screenwriting.
           </p>
         </div>
 
-        {/* Runtime Engine Connection Capsule */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => pingRuntime()}
-            className="flex items-center gap-2 px-3 py-1.5 text-xs rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800/80 transition-colors shadow-2xs"
-            title="Click to ping runtime engine"
-          >
-            <Cpu className="w-3.5 h-3.5 text-blue-500" />
-            <span className="font-mono tabular-nums">
-              {runtimeConfig.is_online && runtimeConfig.node_id
-                ? `${runtimeConfig.node_id} (${runtimeConfig.last_ping_latency_ms || 0}ms)`
-                : 'No compute worker online'}
-            </span>
-            <span
-              className={`w-2 h-2 rounded-full ${
-                runtimeConfig.is_online && runtimeConfig.node_id
-                  ? 'bg-emerald-500'
-                  : 'bg-rose-500'
-              }`}
-            />
-          </button>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Situational Filter Segmented Control */}
+          <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800">
+            {(
+              [
+                { id: 'all', label: 'All Workspaces' },
+                { id: 'creative', label: 'Creative Suite' },
+                { id: 'engineering', label: 'Engineering' },
+                { id: 'infrastructure', label: 'Infrastructure' },
+              ] as Array<{ id: SituationalPreset; label: string }>
+            ).map(item => (
+              <button
+                key={item.id}
+                onClick={() => setSituationalMode(item.id)}
+                className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors whitespace-nowrap shrink-0 ${
+                  situationalMode === item.id
+                    ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
 
           <button
             onClick={onNewTaskClick}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors shrink-0"
+            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>New Task</span>
+            <span>Dispatch Task</span>
           </button>
         </div>
       </div>
 
-      {/* KPI Metric Strip (Tabular figures, single elevation) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {/* Metric 1: Agents */}
-        <div 
-          onClick={() => setActiveTab('agents')}
-          className="cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 hover:border-slate-300 dark:hover:border-slate-700 transition-all shadow-2xs"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Agent Fleet</span>
-            <Bot className="w-4 h-4 text-blue-500" />
+      {/* Section 1: Dedicated Workspaces Grid */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold text-slate-900 dark:text-white">
+            01. Dedicated Production Workspaces
+          </h2>
+          <span className="text-xs text-slate-500 dark:text-slate-400">
+            Select a specialized workspace to launch its dedicated toolset
+          </span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {filteredWorkspaces.map(ws => {
+            const Icon = ws.icon;
+            return (
+              <div
+                key={ws.id}
+                onClick={() => setActiveTab(ws.id)}
+                className="group cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-blue-500 dark:hover:border-blue-500 transition-all flex flex-col justify-between gap-4"
+              >
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div className="w-9 h-9 rounded-lg bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+                      <Icon className="w-4 h-4" />
+                    </div>
+                    <ArrowRight className="w-4 h-4 text-slate-400 group-hover:text-blue-600 dark:group-hover:text-blue-400 group-hover:translate-x-0.5 transition-all" />
+                  </div>
+
+                  <div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      {ws.title}
+                    </h3>
+                    <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                      {ws.description}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400 font-mono tabular-nums">
+                  <span>{ws.modelLabel}</span>
+                  <span>{ws.metricText}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Section 2: Categorized Settings Modules Hub */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-bold text-slate-900 dark:text-white">
+              02. Modular Settings & Infrastructure Categories
+            </h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Jump directly to any situational configuration module
+            </p>
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+          <button
+            onClick={() => setActiveTab('settings')}
+            className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+          >
+            <span>Open Settings Hub</span>
+            <ArrowRight className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {settingsModulesShortcut.map(mod => {
+            const Icon = mod.icon;
+            return (
+              <button
+                key={mod.id}
+                onClick={() => {
+                  setActiveSettingsModule(mod.id);
+                  setActiveTab('settings');
+                }}
+                className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-colors flex items-center justify-between gap-3 text-left"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-8 h-8 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 flex items-center justify-center shrink-0">
+                    <Icon className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold text-slate-900 dark:text-white truncate">
+                      {mod.title}
+                    </div>
+                    <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 truncate mt-0.5">
+                      {mod.meta}
+                    </div>
+                  </div>
+                </div>
+                <ArrowRight className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Section 3: Platform Telemetry & Operations Strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div
+          onClick={() => setActiveTab('agents')}
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
+        >
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>Configured Agents</span>
+            <Bot className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+          </div>
+          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
+            <span className="text-2xl font-bold text-slate-900 dark:text-white">
               {stats.active_agents}
             </span>
-            <span className="text-xs text-slate-400 font-mono">
-              / {stats.total_agents} active
-            </span>
-          </div>
-          <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
-            <span>Configured assistants</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <span className="text-xs text-slate-500">/ {stats.total_agents} active</span>
           </div>
         </div>
 
-        {/* Metric 2: Tasks */}
-        <div 
+        <div
           onClick={() => setActiveTab('tasks')}
-          className="cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 hover:border-slate-300 dark:hover:border-slate-700 transition-all shadow-2xs"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Active Workflows</span>
-            <Workflow className="w-4 h-4 text-indigo-500" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>Execution Queue</span>
+            <Workflow className="w-4 h-4 text-blue-600 dark:text-blue-400" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
+            <span className="text-2xl font-bold text-slate-900 dark:text-white">
               {stats.running_tasks}
             </span>
-            <span className="text-xs text-slate-400 font-mono">
-              / {stats.total_tasks} total
-            </span>
-          </div>
-          <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
-            <span>Execution queue</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <span className="text-xs text-slate-500">/ {stats.total_tasks} tasks</span>
           </div>
         </div>
 
-        {/* Metric 3: Approvals */}
-        <div 
+        <div
           onClick={() => setActiveTab('approvals')}
-          className={`cursor-pointer p-5 rounded-xl border transition-all shadow-2xs ${
-            pendingApprovals.length > 0
-              ? 'border-amber-300 dark:border-amber-800/80 bg-amber-50/50 dark:bg-amber-950/20'
-              : 'border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90'
-          }`}
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Pending Approvals</span>
-            <ShieldAlert className={`w-4 h-4 ${pendingApprovals.length > 0 ? 'text-amber-500' : 'text-slate-400'}`} />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>Human Approvals</span>
+            <ShieldAlert className="w-4 h-4 text-amber-600 dark:text-amber-400" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
+            <span className="text-2xl font-bold text-slate-900 dark:text-white">
               {stats.pending_approvals}
             </span>
-            <span className="text-xs text-slate-400">
-              {stats.pending_approvals === 1 ? 'action requires review' : 'actions require review'}
-            </span>
-          </div>
-          <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
-            <span>Human authorization</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <span className="text-xs text-slate-500">awaiting review</span>
           </div>
         </div>
 
-        {/* Metric 4: Files / Storage */}
-        <div 
+        <div
           onClick={() => setActiveTab('files')}
-          className="cursor-pointer p-5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 hover:border-slate-300 dark:hover:border-slate-700 transition-all shadow-2xs"
+          className="cursor-pointer p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 hover:border-slate-300 dark:hover:border-slate-700 transition-all"
         >
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Cloudflare R2</span>
-            <HardDrive className="w-4 h-4 text-emerald-500" />
+          <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+            <span>Cloudflare R2 Store</span>
+            <HardDrive className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           </div>
-          <div className="mt-2 flex items-baseline gap-2">
-            <span className="text-2xl font-bold font-mono tabular-nums text-slate-900 dark:text-white">
+          <div className="mt-2 flex items-baseline gap-2 font-mono tabular-nums">
+            <span className="text-2xl font-bold text-slate-900 dark:text-white">
               {formatBytes(stats.storage_bytes_used)}
             </span>
-            <span className="text-xs text-slate-400 font-mono">
-              ({stats.total_files} files)
-            </span>
-          </div>
-          <div className="mt-2 text-xs text-slate-500 flex items-center justify-between">
-            <span>Object store</span>
-            <ArrowRight className="w-3 h-3 text-slate-400" />
+            <span className="text-xs text-slate-500">({stats.total_files} files)</span>
           </div>
         </div>
       </div>
 
-      {/* Interactive Pending Approvals Callout (Inline Authorization) */}
+      {/* Inline Pending Approvals Callout */}
       {pendingApprovals.length > 0 && (
-        <div className="p-5 rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 shadow-2xs space-y-3">
+        <div className="p-5 rounded-xl border border-amber-300 dark:border-amber-800/80 bg-amber-50/70 dark:bg-amber-950/30 space-y-3">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
             <div className="flex items-start gap-3">
               <ShieldAlert className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
@@ -197,75 +374,55 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                   <RiskBadge risk={pendingApprovals[0].risk_level} />
                 </h2>
                 <p className="text-xs text-amber-800 dark:text-amber-400 mt-0.5">
-                  Action: <strong className="font-semibold">{pendingApprovals[0].action_name}</strong> by agent {pendingApprovals[0].agent_name}. Workflow execution is paused.
+                  Action: <strong className="font-semibold">{pendingApprovals[0].action_name}</strong> by agent {pendingApprovals[0].agent_name}.
                 </p>
-                {pendingApprovals[0].payload.command && (
-                  <code className="mt-2 block p-2 rounded bg-slate-950 text-blue-400 text-[11px] font-mono border border-amber-400/30 dark:border-amber-900/40">
-                    {pendingApprovals[0].payload.command}
-                  </code>
-                )}
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 self-start md:self-center shrink-0">
+            <div className="flex items-center gap-2.5 shrink-0">
               <button
-                onClick={() => decideApproval(pendingApprovals[0].id, 'rejected', 'Rejected from Dashboard')}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/50 transition-colors"
+                onClick={() => decideApproval(pendingApprovals[0].id, 'rejected', 'Rejected from Workspace Hub')}
+                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-rose-600 dark:text-rose-400 hover:bg-rose-100 transition-colors"
               >
                 Reject
               </button>
               <button
-                onClick={() => decideApproval(pendingApprovals[0].id, 'approved', 'Authorized from Dashboard')}
-                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white shadow-2xs transition-colors"
+                onClick={() => decideApproval(pendingApprovals[0].id, 'approved', 'Authorized from Workspace Hub')}
+                className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
               >
                 Authorize Execution
-              </button>
-              <button
-                onClick={() => setActiveTab('approvals')}
-                className="text-xs text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 underline ml-2"
-              >
-                View all ({pendingApprovals.length})
               </button>
             </div>
           </div>
         </div>
       )}
 
-
-      {/* Two Column Grid: Running Tasks & Agent Fleet */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Column (2 Cols): Live Task Monitor */}
-        <div className="lg:col-span-2 space-y-4">
+      {/* Active Workflows & Agent Fleet */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-              <Workflow className="w-4 h-4 text-blue-500" />
-              <span>Active Workflows</span>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              Active Distributed Workflows
             </h2>
             <button
               onClick={() => setActiveTab('tasks')}
-              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
             >
-              <span>View all ({tasks.length})</span>
-              <ArrowRight className="w-3 h-3" />
+              View Queue ({tasks.length})
             </button>
           </div>
 
-          <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/90 divide-y divide-slate-100 dark:divide-slate-800/80 shadow-2xs overflow-hidden">
+          <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
             {runningTasks.length === 0 ? (
               <div className="p-8 text-center text-slate-500 dark:text-slate-400">
-                <CheckCircle2 className="w-8 h-8 mx-auto mb-2 text-slate-300 dark:text-slate-600" />
-                <p className="text-sm font-medium">All task queues nominal</p>
-                <p className="text-xs mt-1 text-slate-400">No autonomous tasks are currently running.</p>
-                <button
-                  onClick={onNewTaskClick}
-                  className="mt-4 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Submit New Task</span>
-                </button>
+                <CheckCircle2 className="w-7 h-7 mx-auto mb-2 text-slate-300 dark:text-slate-600" />
+                <p className="text-xs font-medium text-slate-700 dark:text-slate-300">All studio queues nominal</p>
+                <p className="text-xs mt-1 text-slate-500">
+                  Launch a synthesis job from Code, Image, Video, or Screenwriter workspaces.
+                </p>
               </div>
             ) : (
-              runningTasks.map(task => (
+              runningTasks.slice(0, 4).map(task => (
                 <div
                   key={task.id}
                   onClick={() => {
@@ -276,89 +433,43 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 text-xs text-slate-500 font-mono tabular-nums">
                         <StatusBadge status={task.status} size="sm" />
-                        <span className="text-xs text-slate-400 font-mono tabular-nums">· {task.agent_name}</span>
-                        <span className="text-xs text-slate-400 font-mono tabular-nums">· Priority: {task.priority}</span>
+                        <span>·</span>
+                        <span>{task.agent_name || task.agent_id}</span>
+                        <span>·</span>
+                        <span>Priority: {task.priority}</span>
                       </div>
                       <h3 className="text-sm font-semibold text-slate-900 dark:text-white mt-1 truncate">
                         {task.title}
                       </h3>
-                      {task.description && (
-                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-1">
-                          {task.description}
-                        </p>
-                      )}
                     </div>
-
-                    <div className="text-right shrink-0">
-                      <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300 tabular-nums">
-                        {task.progress_percent}%
-                      </span>
-                    </div>
+                    <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300 tabular-nums">
+                      {task.progress_percent}%
+                    </span>
                   </div>
-
-                  {/* Progress bar */}
-                  <div className="mt-3 w-full bg-slate-100 dark:bg-slate-800 rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className={`h-full transition-all duration-500 ${
-                        task.status === 'waiting_approval'
-                          ? 'bg-amber-500'
-                          : 'bg-blue-600'
-                      }`}
-                      style={{ width: `${task.progress_percent}%` }}
-                    />
-                  </div>
-
-                  {/* Current step preview */}
-                  {task.steps && task.steps.length > 0 && (
-                    <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 font-mono">
-                      <span>
-                        Step {task.steps.filter(s => s.status === 'completed').length + 1} of {task.steps.length}: {task.steps.find(s => s.status === 'running' || s.status === 'waiting_approval')?.step_name || 'Processing'}
-                      </span>
-                      <span className="tabular-nums">
-                        {task.claimed_by_worker}
-                      </span>
-                    </div>
-                  )}
                 </div>
               ))
             )}
           </div>
         </div>
 
-        {/* Right Column: Agent Fleet Overview */}
-        <div className="space-y-4">
+        {/* Agent Fleet Summary */}
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-              <Bot className="w-4 h-4 text-blue-500" />
-              <span>Configured Agents</span>
+            <h2 className="text-sm font-bold text-slate-900 dark:text-white">
+              Specialized Studio Agents
             </h2>
             <button
               onClick={() => setActiveTab('agents')}
-              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1"
+              className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
             >
-              <span>Manage</span>
-              <ArrowRight className="w-3 h-3" />
+              Manage Fleet
             </button>
           </div>
 
-          <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/90 divide-y divide-slate-100 dark:divide-slate-800/80 shadow-2xs overflow-hidden">
-            {agents.length === 0 ? (
-              <div className="p-6 text-center text-slate-500 dark:text-slate-400">
-                <Bot className="w-8 h-8 mx-auto mb-2 text-slate-300 dark:text-slate-600" />
-                <p className="text-xs font-medium">No agents configured</p>
-                <p className="text-[11px] mt-1 text-slate-400">Create an autonomous agent to execute tasks.</p>
-                <button
-                  onClick={() => setActiveTab('agents')}
-                  className="mt-3 px-3 py-1.5 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline inline-flex items-center gap-1"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Create Agent</span>
-                </button>
-              </div>
-            ) : (
-              agents.map(agent => (
+          <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800 overflow-hidden">
+            {agents.slice(0, 5).map(agent => (
               <div
                 key={agent.id}
                 onClick={() => {
@@ -367,88 +478,18 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
                 }}
                 className="p-3.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 cursor-pointer transition-colors flex items-center justify-between gap-3"
               >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-xs font-bold shrink-0 shadow-2xs"
-                    style={{ backgroundColor: agent.avatar_color }}
-                  >
-                    {agent.name.charAt(0)}
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-slate-900 dark:text-white truncate">
+                    {agent.name}
                   </div>
-                  <div className="min-w-0">
-                    <h3 className="text-xs font-semibold text-slate-900 dark:text-white truncate">
-                      {agent.name}
-                    </h3>
-                    <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                      <span className="font-mono">{agent.model}</span>
-                      <span>·</span>
-                      <span>{agent.permitted_tools.length} tools</span>
-                    </div>
+                  <div className="text-[11px] font-mono text-slate-500 dark:text-slate-400 mt-0.5 truncate">
+                    {agent.model}
                   </div>
                 </div>
-
-                <div className="shrink-0">
-                  <StatusBadge status={agent.is_enabled ? 'enabled' : 'disabled'} size="sm" />
-                </div>
+                <StatusBadge status={agent.is_enabled ? 'enabled' : 'disabled'} size="sm" />
               </div>
-            ))
-          )}
-        </div>
-
-          {/* Quick Chat Shortcut */}
-          <div 
-            onClick={() => setActiveTab('chat')}
-            className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 hover:bg-slate-100 dark:hover:bg-slate-800/60 cursor-pointer transition-colors flex items-center justify-between"
-          >
-            <div className="flex items-center gap-2.5">
-              <Sparkles className="w-4 h-4 text-blue-500" />
-              <div>
-                <p className="text-xs font-semibold text-slate-900 dark:text-white">Conversational Console</p>
-                <p className="text-[11px] text-slate-500">Interact with agents and attach files</p>
-              </div>
-            </div>
-            <ArrowRight className="w-3.5 h-3.5 text-slate-400" />
+            ))}
           </div>
-        </div>
-      </div>
-
-      {/* Recent Activity Log Feed */}
-      <div className="space-y-4">
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold text-slate-900 dark:text-white flex items-center gap-2">
-            <Clock className="w-4 h-4 text-slate-400" />
-            <span>Audit Trail & Activity Log</span>
-          </h2>
-          <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
-            Cloudflare D1 Table: activity_logs
-          </span>
-        </div>
-
-        <div className="border border-slate-200 dark:border-slate-800 rounded-xl bg-white dark:bg-slate-900/90 divide-y divide-slate-100 dark:divide-slate-800/80 shadow-2xs overflow-hidden">
-          {logs.length === 0 ? (
-            <div className="p-6 text-center text-slate-500 dark:text-slate-400 text-xs">
-              No activity recorded yet in the audit log.
-            </div>
-          ) : (
-            logs.slice(0, 5).map(log => (
-            <div key={log.id} className="p-3.5 flex items-center justify-between gap-4 text-xs">
-              <div className="flex items-center gap-3 min-w-0">
-                <span className="font-mono text-slate-400 text-[11px] tabular-nums shrink-0">
-                  {new Date(log.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                </span>
-                <span className="text-slate-500 dark:text-slate-400 capitalize font-mono shrink-0">
-                  [{log.category}]
-                </span>
-                <span className="font-medium text-slate-900 dark:text-slate-200 truncate">
-                  {log.action.replace(/_/g, ' ')}
-                  {log.task_title && ` — ${log.task_title}`}
-                  {log.agent_name && ` (${log.agent_name})`}
-                </span>
-              </div>
-              <span className="text-[11px] text-slate-400 shrink-0 font-mono">
-                {log.id}
-              </span>
-            </div>
-          )))}
         </div>
       </div>
     </div>

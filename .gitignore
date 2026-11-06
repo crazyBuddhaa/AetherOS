@@ -6,6 +6,3 @@ coverage/
 *.log
 .env*
 !.env.example
-.wrangler/
-__pycache__/
-*.py[cod]

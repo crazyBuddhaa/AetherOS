@@ -1,7 +1,6 @@
 import { 
   Agent, 
   Task, 
-  TaskStep, 
   ApprovalRequest, 
   Conversation, 
   Message, 
@@ -12,7 +11,7 @@ import {
 } from '../types';
 
 const STORAGE_KEYS = {
-  AGENTS: 'aetheros_agents',
+  AGENTS: 'aetheros_agents_v2',
   TASKS: 'aetheros_tasks',
   APPROVALS: 'aetheros_approvals',
   CONVERSATIONS: 'aetheros_conversations',
@@ -22,7 +21,110 @@ const STORAGE_KEYS = {
   RUNTIME_CONFIG: 'aetheros_runtime_config',
 };
 
-const DEFAULT_AGENTS: Agent[] = [];
+const nowIso = new Date().toISOString();
+
+const DEFAULT_AGENTS: Agent[] = [
+  {
+    id: 'agent_dataops',
+    name: 'Code & Systems Architect',
+    description: 'Full-stack TypeScript, Python, SQL/D1 schema engineering, and Cloudflare Worker synthesis.',
+    model: 'qwen-2.5-coder-14b',
+    system_instructions: 'You are the AetherOS Code & Systems Architect. Produce clean, modular, strongly-typed production code, parameterized SQL migrations, and deterministic system architectures.',
+    temperature: 0.2,
+    max_tokens: 4096,
+    permitted_tools: [
+      {
+        id: 'tool_d1_query',
+        name: 'd1_sql_inspector',
+        description: 'Validate and benchmark Cloudflare D1 SQLite queries',
+        category: 'database',
+        requires_approval: false,
+        risk_level: 'low',
+        parameters_schema: { query: 'string' },
+      },
+      {
+        id: 'tool_r2_write',
+        name: 'r2_artifact_writer',
+        description: 'Write compiled code artifacts to Cloudflare R2 bucket',
+        category: 'filesystem',
+        requires_approval: false,
+        risk_level: 'low',
+        parameters_schema: { filename: 'string', content: 'string' },
+      },
+    ],
+    is_enabled: true,
+    avatar_color: '#2563EB',
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'agent_visual_synth',
+    name: 'Visual Synthesis Director',
+    description: 'High-resolution image synthesis, SDXL Lightning rendering, Real-ESRGAN 4x upscaling, and BiRefNet segmentation.',
+    model: 'sdxl-lightning',
+    system_instructions: 'You are the AetherOS Visual Synthesis Director. Formulate optically precise, lighting-calibrated prompts and conditioning pipelines for high-resolution image synthesis.',
+    temperature: 0.5,
+    max_tokens: 2048,
+    permitted_tools: [
+      {
+        id: 'tool_upscale',
+        name: 'real_esrgan_upscale',
+        description: '4x spatial super-resolution pass on generated frames',
+        category: 'execution',
+        requires_approval: false,
+        risk_level: 'low',
+        parameters_schema: { scale: 'number' },
+      },
+    ],
+    is_enabled: true,
+    avatar_color: '#0284C7',
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'agent_motion_studio',
+    name: 'Motion & Video Director',
+    description: 'Temporal motion synthesis, camera trajectory planning, and keyframe-conditioned AnimateDiff video generation.',
+    model: 'animatediff-motion-v3',
+    system_instructions: 'You are the AetherOS Motion & Video Director. Orchestrate temporal consistency, focal length transitions, and multi-frame motion modules.',
+    temperature: 0.4,
+    max_tokens: 2048,
+    permitted_tools: [],
+    is_enabled: true,
+    avatar_color: '#4F46E5',
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'agent_storyboard',
+    name: 'Storyboard & Continuity Architect',
+    description: 'Sequential visual narrative planning, camera blocking, lens selection, and animatic pacing.',
+    model: 'deepseek-r1-distill-qwen-14b',
+    system_instructions: 'You are the AetherOS Storyboard & Continuity Architect. Translate narrative beats into structured shot lists with lens focal lengths, camera movement, and visual composition notes.',
+    temperature: 0.3,
+    max_tokens: 4096,
+    permitted_tools: [],
+    is_enabled: true,
+    avatar_color: '#0D9488',
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+  {
+    id: 'agent_screenwriter',
+    name: 'Screenplay & Narrative Dramaturg',
+    description: 'Industry-standard screenplay formatting, dialogue polish, structural beat sheets, and scene breakdown.',
+    model: 'deepseek-r1-distill-qwen-14b',
+    system_instructions: 'You are the AetherOS Screenplay & Narrative Dramaturg. Write crisp, industry-standard fountain/screenplay scenes with sharp subtext, visual action lines, and structural pacing.',
+    temperature: 0.6,
+    max_tokens: 4096,
+    permitted_tools: [],
+    is_enabled: true,
+    avatar_color: '#D97706',
+    created_at: nowIso,
+    updated_at: nowIso,
+  },
+];
+
 const DEFAULT_TASKS: Task[] = [];
 const DEFAULT_APPROVALS: ApprovalRequest[] = [];
 const DEFAULT_CONVERSATIONS: Conversation[] = [];
@@ -31,8 +133,8 @@ const DEFAULT_FILES: AttachedFile[] = [];
 const DEFAULT_LOGS: ActivityLog[] = [];
 
 const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
-  endpoint_url: '',
-  api_key_configured: false,
+  endpoint_url: 'https://aetheros-agent-platform.trileaf.workers.dev',
+  api_key_configured: true,
   timeout_seconds: 30,
   max_retries: 3,
   heartbeat_interval_seconds: 15,
@@ -41,7 +143,7 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeConfig = {
   node_id: '',
   active_jobs: 0,
   capacity_percent: 0,
-  engine_version: '',
+  engine_version: 'AetherOS Worker v1',
 };
 
 // --- Storage Helper Class ---
@@ -65,7 +167,8 @@ class StorageService {
 
   // AGENTS
   getAgents(): Agent[] {
-    return this.getItem<Agent[]>(STORAGE_KEYS.AGENTS, DEFAULT_AGENTS);
+    const stored = this.getItem<Agent[]>(STORAGE_KEYS.AGENTS, DEFAULT_AGENTS);
+    return stored.length > 0 ? stored : DEFAULT_AGENTS;
   }
 
   saveAgent(agent: Agent): void {

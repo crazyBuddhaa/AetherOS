@@ -1,18 +1,28 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useApp, NavTab } from '../../context/AppContext';
-import { 
-  Search, 
-  Bot, 
-  Workflow, 
-  ShieldAlert, 
-  HardDrive, 
-  Settings2, 
-  MessageSquare, 
-  Plus, 
-  Sun, 
-  Moon, 
-  ArrowRight, 
-  Cpu 
+import { useApp, SettingsModuleId } from '../../context/AppContext';
+import {
+  Search,
+  Bot,
+  Workflow,
+  ShieldAlert,
+  HardDrive,
+  Settings2,
+  MessageSquare,
+  Plus,
+  Sun,
+  Moon,
+  ArrowRight,
+  Cpu,
+  Code2,
+  Image as ImageIcon,
+  Film,
+  Clapperboard,
+  FileText,
+  Server,
+  Cloud,
+  Fingerprint,
+  FileCode,
+  Sliders,
 } from 'lucide-react';
 
 interface CommandPaletteProps {
@@ -23,7 +33,7 @@ interface CommandPaletteProps {
 
 interface CommandItem {
   id: string;
-  category: 'Navigation' | 'Workflows' | 'Approvals' | 'Agents' | 'Actions';
+  category: 'Studio Workspaces' | 'Operations' | 'Settings Modules' | 'Workflows' | 'Agents' | 'Actions';
   title: string;
   subtitle?: string;
   icon: React.ReactNode;
@@ -35,16 +45,17 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   onClose,
   onNewTaskClick,
 }) => {
-  const { 
-    setActiveTab, 
-    tasks, 
-    agents, 
-    approvals, 
-    setSelectedTaskId, 
+  const {
+    setActiveTab,
+    setActiveSettingsModule,
+    tasks,
+    agents,
+    approvals,
+    setSelectedTaskId,
     setSelectedAgentId,
-    toggleTheme, 
+    toggleTheme,
     theme,
-    pingRuntime, 
+    pingRuntime,
   } = useApp();
 
   const [query, setQuery] = useState('');
@@ -59,87 +70,185 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     }
   }, [isOpen]);
 
+  const openSettingsModule = (moduleId: SettingsModuleId) => {
+    setActiveSettingsModule(moduleId);
+    setActiveTab('settings');
+    onClose();
+  };
+
   const items: CommandItem[] = [
-    // Navigation
+    // Studio Workspaces
     {
-      id: 'nav-dash',
-      category: 'Navigation',
-      title: 'Go to Dashboard',
-      subtitle: 'Platform metrics, active workflows, and fleet overview',
-      icon: <Workflow className="w-4 h-4 text-blue-500" />,
+      id: 'ws-hub',
+      category: 'Studio Workspaces',
+      title: 'Workspace Hub (Overview)',
+      subtitle: 'Central launcher for separated creative, engineering, and compute studios',
+      icon: <Workflow className="w-4 h-4 text-blue-600" />,
       onSelect: () => { setActiveTab('dashboard'); onClose(); },
     },
     {
+      id: 'ws-code',
+      category: 'Studio Workspaces',
+      title: 'Code Generation Studio',
+      subtitle: 'Multi-file TypeScript, D1 SQL, and Python synthesis workspace',
+      icon: <Code2 className="w-4 h-4 text-blue-600" />,
+      onSelect: () => { setActiveTab('code'); onClose(); },
+    },
+    {
+      id: 'ws-image',
+      category: 'Studio Workspaces',
+      title: 'Image Generation Studio',
+      subtitle: 'SDXL Lightning & SD 1.5 visual synthesis with Real-ESRGAN 4x+ & BiRefNet',
+      icon: <ImageIcon className="w-4 h-4 text-indigo-600" />,
+      onSelect: () => { setActiveTab('image'); onClose(); },
+    },
+    {
+      id: 'ws-video',
+      category: 'Studio Workspaces',
+      title: 'Video Generation Studio',
+      subtitle: 'AnimateDiff temporal motion pipeline with camera trajectory controls',
+      icon: <Film className="w-4 h-4 text-purple-600" />,
+      onSelect: () => { setActiveTab('video'); onClose(); },
+    },
+    {
+      id: 'ws-storyboard',
+      category: 'Studio Workspaces',
+      title: 'Storyboard Studio',
+      subtitle: 'Sequential shot continuity planner, lens specs, and animatic preview',
+      icon: <Clapperboard className="w-4 h-4 text-amber-600" />,
+      onSelect: () => { setActiveTab('storyboard'); onClose(); },
+    },
+    {
+      id: 'ws-screenwriter',
+      category: 'Studio Workspaces',
+      title: 'Screenwriter Studio',
+      subtitle: 'Fountain screenplay editor, scene beat index, and 1-click Storyboard extraction',
+      icon: <FileText className="w-4 h-4 text-emerald-600" />,
+      onSelect: () => { setActiveTab('screenwriter'); onClose(); },
+    },
+
+    // Operations
+    {
       id: 'nav-chat',
-      category: 'Navigation',
-      title: 'Open Conversational Console',
-      subtitle: 'Chat with autonomous agents',
+      category: 'Operations',
+      title: 'Agent Chat Console',
+      subtitle: 'Interactive multi-agent dialogue and task conversion',
       icon: <MessageSquare className="w-4 h-4 text-indigo-500" />,
       onSelect: () => { setActiveTab('chat'); onClose(); },
     },
     {
-      id: 'nav-agents',
-      category: 'Navigation',
-      title: 'Manage Agent Fleet',
-      subtitle: 'Configure models, capabilities, and system rules',
-      icon: <Bot className="w-4 h-4 text-emerald-500" />,
-      onSelect: () => { setActiveTab('agents'); onClose(); },
-    },
-    {
       id: 'nav-tasks',
-      category: 'Navigation',
-      title: 'View Task Orchestration',
+      category: 'Operations',
+      title: 'Task Orchestration Queue',
       subtitle: 'Execution pipelines and step traces',
       icon: <Workflow className="w-4 h-4 text-sky-500" />,
       onSelect: () => { setActiveTab('tasks'); onClose(); },
     },
     {
-      id: 'nav-approvals',
-      category: 'Navigation',
-      title: 'Open Human Authorization Queue',
-      subtitle: 'Review pending consequential actions',
-      icon: <ShieldAlert className="w-4 h-4 text-amber-500" />,
-      onSelect: () => { setActiveTab('approvals'); onClose(); },
-    },
-    {
-      id: 'nav-files',
-      category: 'Navigation',
-      title: 'Browse Cloudflare R2 Storage',
-      subtitle: 'Explore analytical files and task artifacts',
-      icon: <HardDrive className="w-4 h-4 text-purple-500" />,
-      onSelect: () => { setActiveTab('files'); onClose(); },
-    },
-    {
       id: 'nav-compute',
-      category: 'Navigation',
+      category: 'Operations',
       title: 'Distributed Compute Grid',
       subtitle: 'Monitor GPU nodes, Kaggle workers, and VRAM telemetry',
       icon: <Cpu className="w-4 h-4 text-blue-500" />,
       onSelect: () => { setActiveTab('compute'); onClose(); },
     },
     {
-      id: 'nav-settings',
-      category: 'Navigation',
-      title: 'Platform Architecture & Settings',
-      subtitle: 'Inference runtime, D1 migrations, and Wrangler config',
-      icon: <Settings2 className="w-4 h-4 text-slate-500" />,
-      onSelect: () => { setActiveTab('settings'); onClose(); },
+      id: 'nav-sessions',
+      category: 'Operations',
+      title: 'Kaggle T4×2 Sessions',
+      subtitle: 'Dual NVIDIA Tesla T4 (32GB VRAM) lifecycle manager',
+      icon: <Server className="w-4 h-4 text-emerald-500" />,
+      onSelect: () => { setActiveTab('sessions'); onClose(); },
+    },
+    {
+      id: 'nav-agents',
+      category: 'Operations',
+      title: 'Manage Agent Fleet',
+      subtitle: 'Configure models, capabilities, and system rules',
+      icon: <Bot className="w-4 h-4 text-emerald-500" />,
+      onSelect: () => { setActiveTab('agents'); onClose(); },
+    },
+    {
+      id: 'nav-approvals',
+      category: 'Operations',
+      title: 'Human Authorization Queue',
+      subtitle: 'Review pending consequential actions',
+      icon: <ShieldAlert className="w-4 h-4 text-amber-500" />,
+      onSelect: () => { setActiveTab('approvals'); onClose(); },
+    },
+    {
+      id: 'nav-files',
+      category: 'Operations',
+      title: 'Cloudflare R2 Storage',
+      subtitle: 'Explore analytical files and studio artifacts',
+      icon: <HardDrive className="w-4 h-4 text-purple-500" />,
+      onSelect: () => { setActiveTab('files'); onClose(); },
+    },
+
+    // Settings Modules
+    {
+      id: 'set-appearance',
+      category: 'Settings Modules',
+      title: 'Module 01: Workspace & Appearance',
+      subtitle: 'Light-primary theme switcher and situational workspace presets',
+      icon: <Sliders className="w-4 h-4 text-blue-500" />,
+      onSelect: () => openSettingsModule('workspace_appearance'),
+    },
+    {
+      id: 'set-kaggle',
+      category: 'Settings Modules',
+      title: 'Module 02: Compute Grid & Kaggle Sessions',
+      subtitle: 'Kaggle API credentials, T4×2 session controls, and GPU nodes',
+      icon: <Server className="w-4 h-4 text-emerald-500" />,
+      onSelect: () => openSettingsModule('compute_kaggle'),
+    },
+    {
+      id: 'set-inference',
+      category: 'Settings Modules',
+      title: 'Module 03: Inference Runtime & Model Registry',
+      subtitle: 'Endpoint URL, timeout policy, and 10 open-weights model profiles',
+      icon: <Cpu className="w-4 h-4 text-indigo-500" />,
+      onSelect: () => openSettingsModule('inference_models'),
+    },
+    {
+      id: 'set-cloudflare',
+      category: 'Settings Modules',
+      title: 'Module 04: Cloudflare Edge Infrastructure',
+      subtitle: 'Workers router, D1 database ID, and R2 bucket bindings',
+      icon: <Cloud className="w-4 h-4 text-amber-500" />,
+      onSelect: () => openSettingsModule('cloudflare_edge'),
+    },
+    {
+      id: 'set-security',
+      category: 'Settings Modules',
+      title: 'Module 05: Identity & Zero-Password Security',
+      subtitle: 'WebAuthn FIDO2 passkeys, TOTP authenticator, and AES-GCM-256',
+      icon: <Fingerprint className="w-4 h-4 text-purple-500" />,
+      onSelect: () => openSettingsModule('identity_security'),
+    },
+    {
+      id: 'set-cicd',
+      category: 'Settings Modules',
+      title: 'Module 06: Deployment, CI/CD & State',
+      subtitle: 'Generated wrangler.toml, D1 SQL schema, and cache reset',
+      icon: <FileCode className="w-4 h-4 text-slate-500" />,
+      onSelect: () => openSettingsModule('deployment_cicd'),
     },
 
     // Actions
     {
       id: 'act-new-task',
       category: 'Actions',
-      title: 'Submit Autonomous Task...',
-      subtitle: 'Dispatch a new workflow to an agent',
+      title: 'Dispatch Autonomous Task...',
+      subtitle: 'Submit a new workflow to any specialized agent',
       icon: <Plus className="w-4 h-4 text-blue-600" />,
       onSelect: () => { onClose(); onNewTaskClick(); },
     },
     {
       id: 'act-toggle-theme',
       category: 'Actions',
-      title: `Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Mode`,
-      subtitle: 'Toggle platform interface color theme',
+      title: `Switch to ${theme === 'dark' ? 'Light (Primary)' : 'Dark'} Mode`,
+      subtitle: 'Toggle studio color theme',
       icon: theme === 'dark' ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-600" />,
       onSelect: () => { toggleTheme(); onClose(); },
     },
@@ -148,14 +257,14 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
       category: 'Actions',
       title: 'Ping Inference Engine',
       subtitle: 'Test round-trip latency to external self-hosted worker',
-      icon: <Cpu className="w-4 h-4 text-blue-500" />,
+      icon: <Settings2 className="w-4 h-4 text-blue-500" />,
       onSelect: () => { pingRuntime(); onClose(); },
     },
 
     // Pending Approvals
     ...approvals.filter(a => a.status === 'pending').map(appr => ({
       id: `appr-${appr.id}`,
-      category: 'Approvals' as const,
+      category: 'Operations' as const,
       title: `Authorize: ${appr.action_name}`,
       subtitle: `${appr.agent_name} · ${appr.risk_level} risk`,
       icon: <ShieldAlert className="w-4 h-4 text-amber-500" />,
@@ -163,7 +272,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     })),
 
     // Active Tasks
-    ...tasks.slice(0, 5).map(task => ({
+    ...tasks.slice(0, 4).map(task => ({
       id: `task-${task.id}`,
       category: 'Workflows' as const,
       title: task.title,
@@ -173,7 +282,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
     })),
 
     // Agents
-    ...agents.map(agent => ({
+    ...agents.slice(0, 6).map(agent => ({
       id: `agent-${agent.id}`,
       category: 'Agents' as const,
       title: agent.name,
@@ -215,17 +324,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4">
       {/* Backdrop */}
-      <div 
+      <div
         onClick={onClose}
-        className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs transition-opacity" 
+        className="fixed inset-0 bg-slate-950/50 backdrop-blur-xs transition-opacity"
       />
 
       {/* Modal Dialog */}
-      <div 
-        className="relative w-full max-w-xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden z-10 animate-in fade-in zoom-in-95 duration-150"
-      >
+      <div className="relative w-full max-w-xl rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden z-10">
         {/* Search Input Bar */}
-        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-slate-100 dark:border-slate-800/80">
+        <div className="flex items-center gap-3 px-4 py-3.5 border-b border-slate-100 dark:border-slate-800">
           <Search className="w-4 h-4 text-slate-400 shrink-0" />
           <input
             ref={inputRef}
@@ -236,7 +343,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
               setSelectedIndex(0);
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command, workflow, agent, or search..."
+            placeholder="Jump to workspace (Code, Image, Video, Storyboard, Screenwriter) or Settings module..."
             className="flex-1 text-sm bg-transparent border-0 outline-none text-slate-900 dark:text-white placeholder-slate-400 font-sans"
           />
           <kbd className="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono text-slate-400 bg-slate-100 dark:bg-slate-800 rounded border border-slate-200 dark:border-slate-700">
@@ -245,10 +352,10 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         </div>
 
         {/* Results List */}
-        <div className="max-h-96 overflow-y-auto p-2 divide-y divide-slate-100/50 dark:divide-slate-800/50">
+        <div className="max-h-96 overflow-y-auto p-2 divide-y divide-slate-100/60 dark:divide-slate-800/60">
           {filteredItems.length === 0 ? (
             <div className="py-8 text-center text-xs text-slate-500">
-              No results found for "{query}".
+              No workspaces or modules found for "{query}".
             </div>
           ) : (
             filteredItems.map((item, idx) => {
@@ -293,13 +400,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({
         </div>
 
         {/* Footer shortcuts hint */}
-        <div className="px-4 py-2 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400 font-mono">
+        <div className="px-4 py-2 bg-slate-50 dark:bg-slate-950/80 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-400 font-mono">
           <div className="flex items-center gap-3">
             <span>↑↓ Navigate</span>
-            <span>↵ Select</span>
+            <span>↵ Open Studio</span>
             <span>ESC Close</span>
           </div>
-          <span>AetherOS Quick Jump</span>
+          <span>AetherOS Studio Quick Jump</span>
         </div>
       </div>
     </div>

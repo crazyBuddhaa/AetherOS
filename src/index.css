@@ -4,16 +4,28 @@
 
 @layer base {
   :root {
+    --font-display: 'Outfit', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
-  
+
   html {
     font-family: var(--font-sans);
+    background-color: #F8FAFC;
+    color: #0F172A;
+  }
+
+  html.dark {
+    background-color: #0B0F17;
+    color: #F8FAFC;
+  }
+
+  h1, h2, h3, .font-display {
+    font-family: var(--font-display);
   }
 }
 
-/* Custom subtle scrollbars for code & log viewers */
+/* Custom subtle scrollbars for studio workspaces & code viewers */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -24,11 +36,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(148, 163, 184, 0.2);
+  background: rgba(148, 163, 184, 0.28);
   border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(148, 163, 184, 0.4);
+  background: rgba(148, 163, 184, 0.48);
 }
-
