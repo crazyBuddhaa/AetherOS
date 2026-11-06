@@ -20,6 +20,7 @@ import {
 import { dbStorage } from '../services/db-storage';
 import { runtimeEngine } from '../services/runtime-engine';
 import { apiClient } from '../services/api-client';
+import { bufferToBase64Url, base64UrlToBuffer } from '../utils/webauthn';
 
 export type NavTab =
   | 'dashboard'
@@ -36,7 +37,8 @@ export type NavTab =
   | 'files'
   | 'compute'
   | 'sessions'
-  | 'settings';
+  | 'settings'
+  | 'auth';
 
 export type SituationalPreset = 'all' | 'creative' | 'engineering' | 'infrastructure';
 
@@ -1002,8 +1004,73 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     }
   };
 
-  const enrollPasskey = async (_credentialName?: string) => {
-    showNotification('Passkey enrollment is active during registration and in Security settings', 'info');
+  const enrollPasskey = async (credentialName?: string) => {
+    if (!user) {
+      showNotification('Please authenticate before enrolling a passkey', 'error');
+      return;
+    }
+    if (!window.PublicKeyCredential) {
+      showNotification('WebAuthn/Passkeys are not supported by this browser', 'error');
+      return;
+    }
+    try {
+      const chData = await apiClient.enrollPasskeyChallenge();
+      const ch = chData.challenge;
+      const rpName = 'AetherOS Platform';
+      const rpId = window.location.hostname === 'localhost' ? 'localhost' : (ch.rpId || window.location.hostname);
+      const userId = ch.user?.id || user.id;
+
+      const publicKeyCredentialCreationOptions: PublicKeyCredentialCreationOptions = {
+        challenge: base64UrlToBuffer(ch.challenge),
+        rp: { name: rpName, id: rpId },
+        user: {
+          id: base64UrlToBuffer(userId),
+          name: ch.user?.name || user.email,
+          displayName: ch.user?.displayName || user.name,
+        },
+        pubKeyCredParams: [
+          { alg: -7, type: 'public-key' },
+          { alg: -257, type: 'public-key' },
+        ],
+        authenticatorSelection: {
+          residentKey: 'preferred',
+          userVerification: 'preferred',
+        },
+        timeout: ch.timeout || 60000,
+        attestation: 'none',
+      };
+
+      const credential = (await navigator.credentials.create({
+        publicKey: publicKeyCredentialCreationOptions,
+      })) as PublicKeyCredential | null;
+
+      if (!credential) {
+        throw new Error('Passkey creation was cancelled or declined');
+      }
+
+      const rawAttestation = credential.response as AuthenticatorAttestationResponse;
+      await apiClient.verifyWebAuthnRegister({
+        challenge_id: ch.id,
+        user_id: user.id,
+        credential: {
+          id: credential.id,
+          rawId: bufferToBase64Url(credential.rawId),
+          type: credential.type,
+          response: {
+            clientDataJSON: bufferToBase64Url(rawAttestation.clientDataJSON),
+            attestationObject: bufferToBase64Url(rawAttestation.attestationObject),
+          },
+        },
+        credential_name: credentialName || `${navigator.platform || 'Device'} Hardware Passkey`,
+      });
+
+      await refreshUser();
+      showNotification('Hardware passkey enrolled and active', 'success');
+    } catch (err: any) {
+      console.error('Passkey enrollment failed:', err);
+      showNotification(err?.message || 'Failed to enroll passkey', 'error');
+      throw err;
+    }
   };
 
   const deletePasskey = async (id: string) => {

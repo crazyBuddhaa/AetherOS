@@ -113,11 +113,13 @@ export const SettingsView: React.FC = () => {
     isAuthenticated,
     passkeys,
     hasTotp,
+    enrollPasskey,
     deletePasskey,
     setupTotp,
     verifyTotpSetup,
     setIsAuthModalOpen,
     setAuthModalMode,
+    setActiveTab,
     computeSessions,
     activeComputeSession,
     startComputeSession,
@@ -955,16 +957,21 @@ jobs:
                     {user.email} · User ID: {user.id}
                   </p>
                 </div>
-                <button
-                  onClick={() => {
-                    setAuthModalMode('register');
-                    setIsAuthModalOpen(true);
-                  }}
-                  className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg border border-blue-200 dark:border-blue-800 text-blue-600 dark:text-blue-400 hover:bg-blue-50 transition-colors"
-                >
-                  <Fingerprint className="w-3.5 h-3.5" />
-                  <span>Enroll Passkey</span>
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => enrollPasskey()}
+                    className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors"
+                  >
+                    <Fingerprint className="w-3.5 h-3.5" />
+                    <span>Enroll Hardware Passkey</span>
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('auth')}
+                    className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+                  >
+                    <span>Full Identity Hub →</span>
+                  </button>
+                </div>
               </div>
 
               {/* Passkeys */}
@@ -1079,16 +1086,28 @@ jobs:
                   Sign in or register with a hardware FIDO2 WebAuthn passkey or RFC 6238 TOTP authenticator to claim compute workers and isolate organization workspaces.
                 </p>
               </div>
-              <button
-                onClick={() => {
-                  setAuthModalMode('login');
-                  setIsAuthModalOpen(true);
-                }}
-                className="px-5 py-2.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors inline-flex items-center gap-2"
-              >
-                <Fingerprint className="w-4 h-4" />
-                <span>Sign In / Register Passkey</span>
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2.5">
+                <button
+                  onClick={() => {
+                    setAuthModalMode('login');
+                    setActiveTab('auth');
+                  }}
+                  className="px-5 py-2.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-xl transition-colors inline-flex items-center gap-2 shadow-xs"
+                >
+                  <Fingerprint className="w-4 h-4" />
+                  <span>Sign In with Passkey</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setAuthModalMode('register');
+                    setActiveTab('auth');
+                  }}
+                  className="px-5 py-2.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 rounded-xl border border-blue-200 dark:border-blue-900 transition-colors inline-flex items-center gap-2"
+                >
+                  <Key className="w-4 h-4" />
+                  <span>Register Account</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

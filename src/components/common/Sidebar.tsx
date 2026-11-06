@@ -18,6 +18,7 @@ import {
   Sun,
   Moon,
   Globe,
+  Fingerprint,
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
@@ -67,6 +68,7 @@ export const Sidebar: React.FC = () => {
     { id: 'agents', label: 'Agent Fleet', badge: stats.active_agents || undefined, category: 'engineering', icon: Bot },
     { id: 'approvals', label: 'Approvals', badge: stats.pending_approvals || undefined, category: 'infrastructure', icon: ShieldCheck },
     { id: 'files', label: 'R2 Storage', badge: stats.total_files || undefined, category: 'engineering', icon: HardDrive },
+    { id: 'auth', label: 'Identity & Passkeys', category: 'all', icon: Fingerprint },
   ];
 
   const settingsModules: Array<{ id: SettingsModuleId; label: string }> = [

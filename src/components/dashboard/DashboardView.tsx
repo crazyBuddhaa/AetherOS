@@ -197,7 +197,7 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
 
           <button
             onClick={onNewTaskClick}
-            className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap shrink-0"
+            className="hidden sm:flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors whitespace-nowrap shrink-0"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Dispatch Task</span>
@@ -207,8 +207,8 @@ export const DashboardView: React.FC<{ onNewTaskClick: () => void }> = ({ onNewT
 
       {/* Section 1: Dedicated Workspaces Grid */}
       <div className="space-y-3 min-w-0">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
-          <h2 className="text-base font-bold text-slate-900 dark:text-white">
+        <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-1 sm:gap-4">
+          <h2 className="text-base font-bold text-slate-900 dark:text-white shrink-0">
             01. Dedicated Production Workspaces
           </h2>
           <span className="text-xs text-slate-500 dark:text-slate-400">

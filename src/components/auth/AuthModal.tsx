@@ -48,7 +48,8 @@ export const AuthModal: React.FC = () => {
     authModalMode, 
     setAuthModalMode, 
     refreshUser, 
-    showNotification 
+    showNotification,
+    setActiveTab,
   } = useApp();
 
   // Registration fields
@@ -611,6 +612,19 @@ export const AuthModal: React.FC = () => {
           <div className="pt-2 text-[11px] text-slate-400 dark:text-slate-500 flex items-center justify-center gap-1.5 text-center">
             <ShieldAlert className="w-3.5 h-3.5 text-slate-400 shrink-0" />
             <span>Strict security: No password resets or backdoor recovery bypasses.</span>
+          </div>
+
+          <div className="pt-2 text-center border-t border-slate-100 dark:border-slate-800">
+            <button
+              type="button"
+              onClick={() => {
+                handleClose();
+                setActiveTab('auth');
+              }}
+              className="text-xs text-blue-600 dark:text-blue-400 hover:underline font-medium"
+            >
+              Open dedicated Identity & Passkey Hub →
+            </button>
           </div>
         </div>
 

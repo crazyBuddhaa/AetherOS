@@ -33,6 +33,7 @@ export const TopBar: React.FC<{
   // Mobile includes all workspaces + operations
   const mobileNavItems: { id: NavTab; label: string; count?: number }[] = [
     ...studioNavItems,
+    { id: 'web_intelligence', label: 'Web Intel' },
     { id: 'chat', label: 'Agent Chat' },
     { id: 'tasks', label: 'Tasks', count: stats.running_tasks > 0 ? stats.running_tasks : undefined },
     { id: 'compute', label: 'Compute Grid' },
@@ -41,11 +42,12 @@ export const TopBar: React.FC<{
     { id: 'approvals', label: 'Approvals', count: stats.pending_approvals > 0 ? stats.pending_approvals : undefined },
     { id: 'files', label: 'R2 Storage' },
     { id: 'settings', label: 'Settings' },
+    { id: 'auth', label: 'Identity & Passkeys' },
   ];
 
   return (
     <header className="sticky top-0 z-40 w-full max-w-full overflow-hidden border-b border-slate-200 dark:border-slate-800 bg-white/95 dark:bg-slate-900/95 backdrop-blur-md transition-colors">
-      <div className="max-w-[1600px] w-full mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-2 sm:gap-4 min-w-0">
+      <div className="max-w-[1600px] w-full mx-auto px-3 sm:px-6 h-14 sm:h-16 flex items-center justify-between gap-1.5 sm:gap-4 min-w-0">
         {/* Zone 1: Brand Wordmark */}
         <div className="flex items-center gap-2 shrink-0">
           <button
@@ -83,10 +85,10 @@ export const TopBar: React.FC<{
         </nav>
 
         {/* Zone 3: Actions, Theme Switcher & Auth */}
-        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-0">
+        <div className="flex items-center gap-1 sm:gap-2 shrink-0 min-w-0">
           <button
             onClick={onOpenCommandPalette}
-            className="flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-xs text-slate-500 dark:text-slate-400 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 hover:text-slate-800 dark:hover:text-slate-200 transition-colors whitespace-nowrap shrink-0"
+            className="hidden sm:flex items-center gap-1.5 p-2 sm:px-2.5 sm:py-1.5 text-xs text-slate-500 dark:text-slate-400 rounded-lg border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 hover:text-slate-800 dark:hover:text-slate-200 transition-colors whitespace-nowrap shrink-0"
             title="Open Command Palette (Cmd+K)"
             aria-label="Quick search"
           >
@@ -131,33 +133,39 @@ export const TopBar: React.FC<{
 
           <button
             onClick={onNewTaskClick}
-            className="flex items-center gap-1 px-2.5 sm:px-3.5 py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs transition-colors whitespace-nowrap shrink-0"
+            className="flex items-center gap-1 p-2 sm:px-3 sm:py-1.5 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 active:bg-blue-800 rounded-lg shadow-xs transition-colors whitespace-nowrap shrink-0"
+            title="Dispatch Task"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span className="sm:hidden">Task</span>
             <span className="hidden sm:inline">Dispatch Task</span>
           </button>
 
           {/* User Profile / Auth Area */}
-          <div className="flex items-center gap-1.5 sm:gap-2 pl-1.5 sm:pl-2 border-l border-slate-200 dark:border-slate-800 shrink-0">
+          <div className="flex items-center gap-1 sm:gap-2 pl-1 sm:pl-2 border-l border-slate-200 dark:border-slate-800 shrink-0">
             {isAuthenticated && user ? (
-              <div className="flex items-center gap-1.5 sm:gap-2">
-                <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-semibold text-xs flex items-center justify-center font-mono shrink-0">
-                  {user.name
-                    .split(' ')
-                    .map(n => n[0])
-                    .join('')
-                    .slice(0, 2)
-                    .toUpperCase() || 'U'}
-                </div>
-                <div className="text-left text-xs hidden 2xl:block">
-                  <div className="font-semibold text-slate-900 dark:text-slate-100 leading-tight">
-                    {user.name}
+              <div className="flex items-center gap-1 sm:gap-2">
+                <button
+                  onClick={() => setActiveTab('auth')}
+                  title={`Signed in as ${user.name} - View Identity & Passkeys`}
+                  className="flex items-center gap-1.5 p-1 sm:px-2 sm:py-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors text-left"
+                >
+                  <div className="w-7 h-7 rounded-full bg-blue-600 text-white font-semibold text-xs flex items-center justify-center font-mono shrink-0 shadow-2xs">
+                    {user.name
+                      .split(' ')
+                      .map(n => n[0])
+                      .join('')
+                      .slice(0, 2)
+                      .toUpperCase() || 'U'}
                   </div>
-                  <div className="text-slate-500 text-[11px] truncate max-w-[110px]">
-                    {workspace?.name || 'Personal Studio'}
+                  <div className="hidden lg:block text-xs">
+                    <div className="font-semibold text-slate-900 dark:text-slate-100 leading-tight truncate max-w-[100px]">
+                      {user.name}
+                    </div>
+                    <div className="text-slate-500 text-[10px] truncate max-w-[100px]">
+                      {workspace?.name || 'Personal'}
+                    </div>
                   </div>
-                </div>
+                </button>
                 <button
                   onClick={() => logout()}
                   title="Sign out"
@@ -167,17 +175,27 @@ export const TopBar: React.FC<{
                 </button>
               </div>
             ) : (
-              <button
-                onClick={() => {
-                  setAuthModalMode('login');
-                  setIsAuthModalOpen(true);
-                }}
-                className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors border border-slate-200 dark:border-slate-700 whitespace-nowrap shrink-0"
-              >
-                <Fingerprint className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
-                <span className="sm:hidden">Sign In</span>
-                <span className="hidden sm:inline">Passkey Sign In</span>
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => {
+                    setAuthModalMode('login');
+                    setActiveTab('auth');
+                  }}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg transition-colors border border-slate-200 dark:border-slate-700 whitespace-nowrap shrink-0 shadow-2xs"
+                >
+                  <Fingerprint className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                  <span>Sign In</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setAuthModalMode('register');
+                    setActiveTab('auth');
+                  }}
+                  className="hidden sm:flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900/60 rounded-lg transition-colors border border-blue-200 dark:border-blue-900 whitespace-nowrap shrink-0"
+                >
+                  <span>Register</span>
+                </button>
+              </div>
             )}
           </div>
         </div>

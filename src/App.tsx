@@ -22,6 +22,7 @@ import { FilesView } from './components/files/FilesView';
 import { ComputeView } from './components/compute/ComputeView';
 import { SessionManagerView } from './components/compute/SessionManagerView';
 import { SettingsView } from './components/settings/SettingsView';
+import { AuthPageView } from './components/auth/AuthPageView';
 import { NewTaskModal } from './components/tasks/NewTaskModal';
 import { AuthModal } from './components/auth/AuthModal';
 import { CommandPalette } from './components/common/CommandPalette';
@@ -95,6 +96,7 @@ const AppContent: React.FC = () => {
           {activeTab === 'compute' && <ComputeView />}
           {activeTab === 'sessions' && <SessionManagerView />}
           {activeTab === 'settings' && <SettingsView />}
+          {activeTab === 'auth' && <AuthPageView />}
         </main>
       </div>
 
