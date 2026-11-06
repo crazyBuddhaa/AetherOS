@@ -1,0 +1,36 @@
+name = "aetheros-agent-platform"
+main = "worker/index.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Cloudflare Pages / Workers Static Assets
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+# Cloudflare D1 Database Binding
+[[d1_databases]]
+binding = "DB"
+database_name = "aetheros-d1-production"
+database_id = "665b6a9a-69b8-4d90-92a4-a51059ab2e59"
+migrations_dir = "migrations"
+
+# Cloudflare R2 File Storage Binding
+[[r2_buckets]]
+binding = "FILES_BUCKET"
+bucket_name = "aetheros-agent-files"
+
+# Environment Variables & External Inference Worker Runtime Config
+[vars]
+ENVIRONMENT = "production"
+# External Inference Engine Endpoint (Self-Hosted Inference Worker)
+INFERENCE_RUNTIME_URL = "https://inference-runtime.internal.aetheros.io"
+INFERENCE_RUNTIME_TIMEOUT_MS = "30000"
+INFERENCE_RUNTIME_MAX_RETRIES = "3"
+REQUIRE_WORKER_NONCE = "true"
+
+# Secrets (configured via `wrangler secret put <KEY>`):
+# - WORKER_AUTH_PEPPER: Server-side cryptographic HMAC pepper for worker API keys
+# - WORKER_REGISTRATION_TOKEN: Optional enrollment secret required on POST /api/workers/register
+# - RUNTIME_API_KEY: Authenticated bearer secret for inference worker & operator revocation
+# - JWT_SECRET: Secret for user session tokens

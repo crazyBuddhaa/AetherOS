@@ -1,0 +1,7 @@
+{
+  "name": "AetherOS AI Agent Platform",
+  "description": "Modern general-purpose AI agent platform with conversation, task execution, human-in-the-loop approvals, file management, and Cloudflare D1/R2 architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
