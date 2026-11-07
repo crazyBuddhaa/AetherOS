@@ -381,6 +381,7 @@ interface AppContextType {
   workspace: Organization | null;
   workspaces: Organization[];
   isAuthenticated: boolean;
+  isAuthChecking: boolean;
   passkeys: PasskeyItem[];
   hasTotp: boolean;
   isAuthModalOpen: boolean;
@@ -499,6 +500,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Auth & Identity State
   const [user, setUser] = useState<UserAccount | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
   const [workspace, setWorkspace] = useState<Organization | null>(null);
   const [workspaces, setWorkspaces] = useState<Organization[]>([]);
   const [passkeys, setPasskeys] = useState<PasskeyItem[]>([]);
@@ -667,6 +669,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       setWorkspaces([]);
       setPasskeys([]);
       setHasTotp(false);
+    } finally {
+      setIsAuthChecking(false);
     }
   }, []);
 
@@ -1192,6 +1196,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         workspace,
         workspaces,
         isAuthenticated,
+        isAuthChecking,
         passkeys,
         hasTotp,
         isAuthModalOpen,
