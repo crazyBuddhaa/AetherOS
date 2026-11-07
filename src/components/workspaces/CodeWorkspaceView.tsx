@@ -10,17 +10,10 @@ import {
   FileCode,
   Terminal,
   Cpu,
-  HardDrive,
   Sparkles,
   RefreshCw,
-  FolderGit2,
-  ShieldCheck,
-  AlertTriangle,
-  ExternalLink,
   GitBranch,
-  GitCommit,
   UploadCloud,
-  FileText,
   Folder,
   FolderOpen,
   ChevronRight,
@@ -30,19 +23,16 @@ import {
   Send,
   Sliders,
   X,
-  Maximize2,
-  Minimize2,
   Save,
-  MessageSquare,
-  Bot,
-  User,
   Wrench,
-  Search,
   CheckCircle2,
   AlertCircle,
   Database,
   Globe,
   Key,
+  Plug,
+  Trash2,
+  Activity,
 } from 'lucide-react';
 
 interface OpenTab {
@@ -67,6 +57,57 @@ interface ChatMessage {
   }>;
   timestamp: string;
 }
+
+const MANUAL_API_PRESETS = [
+  {
+    id: 'openai',
+    label: 'OpenAI Compatible',
+    format: 'openai_compatible',
+    endpoint: 'https://api.openai.com/v1/chat/completions',
+    authHeaderName: 'Authorization',
+    model: 'gpt-4o',
+  },
+  {
+    id: 'anthropic',
+    label: 'Anthropic Messages API',
+    format: 'anthropic',
+    endpoint: 'https://api.anthropic.com/v1/messages',
+    authHeaderName: 'x-api-key',
+    model: 'claude-3-7-sonnet-latest',
+  },
+  {
+    id: 'cloudflare',
+    label: 'Cloudflare Workers AI',
+    format: 'cloudflare_workers_ai',
+    endpoint: 'https://api.cloudflare.com/client/v4/accounts/YOUR_ACCOUNT_ID/ai/run/@cf/qwen/qwen1.5-14b-chat-awq',
+    authHeaderName: 'Authorization',
+    model: '@cf/qwen/qwen1.5-14b-chat-awq',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter Gateway',
+    format: 'openai_compatible',
+    endpoint: 'https://openrouter.ai/api/v1/chat/completions',
+    authHeaderName: 'Authorization',
+    model: 'qwen/qwen-2.5-coder-32b-instruct',
+  },
+  {
+    id: 'groq',
+    label: 'Groq Cloud LPU',
+    format: 'openai_compatible',
+    endpoint: 'https://api.groq.com/openai/v1/chat/completions',
+    authHeaderName: 'Authorization',
+    model: 'llama-3.3-70b-versatile',
+  },
+  {
+    id: 'ollama',
+    label: 'Local Ollama / vLLM',
+    format: 'ollama',
+    endpoint: 'http://localhost:11434/v1/chat/completions',
+    authHeaderName: 'Authorization',
+    model: 'qwen2.5-coder:14b',
+  },
+];
 
 export const CodeWorkspaceView: React.FC = () => {
   const { showNotification } = useApp();
@@ -100,31 +141,82 @@ export const CodeWorkspaceView: React.FC = () => {
   const [githubToken, setGithubToken] = useState('');
   const [isCommittingOrPushing, setIsCommittingOrPushing] = useState(false);
 
-  // --- Model & External API State ---
+  // --- Model & Manual API Connection State ---
   const [models, setModels] = useState<any[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string>('gemini-3.8-flash');
+  const [selectedModel, setSelectedModel] = useState<string>('qwen-2.5-coder-14b');
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  const [externalEndpoint, setExternalEndpoint] = useState('');
-  const [externalApiKey, setExternalApiKey] = useState('');
-  const [externalModelName, setExternalModelName] = useState('gpt-4o');
-  const [temperature, setTemperature] = useState(0.4);
+  const [manualFormat, setManualFormat] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aetheros_manual_api_format') || 'openai_compatible';
+    } catch {
+      return 'openai_compatible';
+    }
+  });
+  const [externalEndpoint, setExternalEndpoint] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aetheros_manual_api_endpoint') || 'https://api.openai.com/v1/chat/completions';
+    } catch {
+      return 'https://api.openai.com/v1/chat/completions';
+    }
+  });
+  const [externalApiKey, setExternalApiKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aetheros_manual_api_key') || '';
+    } catch {
+      return '';
+    }
+  });
+  const [authHeaderName, setAuthHeaderName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aetheros_manual_api_header') || 'Authorization';
+    } catch {
+      return 'Authorization';
+    }
+  });
+  const [externalModelName, setExternalModelName] = useState<string>(() => {
+    try {
+      return localStorage.getItem('aetheros_manual_api_model') || 'gpt-4o';
+    } catch {
+      return 'gpt-4o';
+    }
+  });
+  const [temperature, setTemperature] = useState(0.3);
   const [maxTokens, setMaxTokens] = useState(3000);
+  const [isTestingApi, setIsTestingApi] = useState(false);
+  const [apiTestResult, setApiTestResult] = useState<{
+    success: boolean;
+    message: string;
+    latency_ms?: number;
+  } | null>(null);
 
   // --- MCP (Model Context Protocol) State ---
   const [mcpServers, setMcpServers] = useState<any[]>([]);
+  const [mcpTemplates, setMcpTemplates] = useState<any[]>([]);
   const [mcpTools, setMcpTools] = useState<any[]>([]);
   const [isMcpModalOpen, setIsMcpModalOpen] = useState(false);
+  const [mcpModalTab, setMcpModalTab] = useState<'connected' | 'popular' | 'tools' | 'custom'>('connected');
   const [newMcpName, setNewMcpName] = useState('');
+  const [newMcpProvider, setNewMcpProvider] = useState('Custom MCP');
   const [newMcpEndpoint, setNewMcpEndpoint] = useState('');
+  const [newMcpTransport, setNewMcpTransport] = useState<'http' | 'sse'>('http');
+  const [newMcpApiKey, setNewMcpApiKey] = useState('');
+  const [configuringServerId, setConfiguringServerId] = useState<string | null>(null);
+  const [serverConfigValues, setServerConfigValues] = useState<Record<string, string>>({});
+  const [toolExecutionOutput, setToolExecutionOutput] = useState<{
+    tool: string;
+    result: any;
+    error?: string;
+  } | null>(null);
+  const [isExecutingMcpTool, setIsExecutingMcpTool] = useState(false);
 
-  // --- AI Studio Chat Assistant State ---
+  // --- Coding Assistant Chat State ---
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
       sender: 'assistant',
-      content: `Welcome to **Google AI Studio Coding Workspace** inside AetherOS!\n\nI can directly read your repository, modify and save files, inspect git changes, push commits to remote, and invoke Model Context Protocol (MCP) tools.\n\nAsk me anything about your codebase or click a suggestion below to begin.`,
-      model: 'gemini-3.8-flash',
-      provider: 'gemini',
+      content: `Welcome to **AetherOS Code Studio**!\n\n- **Distributed GPU Runtime:** \`qwen-2.5-coder-14b\` (Kaggle T4×2)\n- **Manual API Connection:** Connect OpenAI, Anthropic, Cloudflare Workers AI, OpenRouter, Groq, or Local Ollama/vLLM endpoints\n- **Connected MCP Servers:** Cloudflare (Workers/D1/R2), GitHub, Filesystem, Git Operations, Web Recon & Host Telemetry\n\nSelect a file from the explorer, test an MCP tool, or ask me to inspect and refactor your repository.`,
+      model: 'qwen-2.5-coder-14b',
+      provider: 'kaggle',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     },
   ]);
@@ -152,14 +244,20 @@ export const CodeWorkspaceView: React.FC = () => {
       if (res.models) {
         setModels(res.models);
       }
+      if (res.manual_api_config) {
+        const cfg = res.manual_api_config;
+        if (cfg.endpoint && !localStorage.getItem('aetheros_manual_api_endpoint')) {
+          setExternalEndpoint(cfg.endpoint);
+        }
+        if (cfg.model && !localStorage.getItem('aetheros_manual_api_model')) {
+          setExternalModelName(cfg.model);
+        }
+      }
     } catch {
-      // Use standard fallback
       setModels([
-        { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash (Google AI Studio)' },
-        { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite' },
-        { id: 'gemini-4-argon', name: 'Gemini 4 Argon' },
-        { id: 'qwen-2.5-coder-14b', name: 'Qwen 2.5 Coder 14B (Kaggle)' },
-        { id: 'external-api', name: 'External Provider / Custom API' },
+        { id: 'qwen-2.5-coder-14b', name: 'Qwen 2.5 Coder 14B (Kaggle T4×2 GPU)' },
+        { id: 'deepseek-coder-v2-16b', name: 'DeepSeek Coder V2 16B Lite (Kaggle GPU)' },
+        { id: 'manual-api', name: 'Manual API Connection (OpenAI / Anthropic / Cloudflare / Custom)' },
       ]);
     }
   };
@@ -169,7 +267,6 @@ export const CodeWorkspaceView: React.FC = () => {
     try {
       const tree = await apiClient.getRepoTree(4);
       setRepoTree(tree);
-      // Open src/App.tsx by default if no tabs open
       if (openTabs.length === 0) {
         await handleOpenFile('src/App.tsx');
       }
@@ -190,12 +287,16 @@ export const CodeWorkspaceView: React.FC = () => {
     }
   };
 
-  // Load MCP servers & tools
+  // Load MCP servers, templates & tools
   const loadMcpData = async () => {
     try {
-      const servers = await apiClient.getMcpServers();
+      const [servers, templates, tools] = await Promise.all([
+        apiClient.getMcpServers(),
+        apiClient.getMcpTemplates(),
+        apiClient.getMcpTools(),
+      ]);
       setMcpServers(servers);
-      const tools = await apiClient.getMcpTools();
+      setMcpTemplates(templates);
       setMcpTools(tools);
     } catch (err: any) {
       console.error('Failed to load MCP servers:', err);
@@ -273,12 +374,10 @@ export const CodeWorkspaceView: React.FC = () => {
 
     setIsCommittingOrPushing(true);
     try {
-      // Step 1: Commit
       const commitRes = await apiClient.commitGit(commitMessage.trim(), true);
       showNotification(`Committed [${commitRes.commitHash}]: ${commitRes.message}`, 'success');
 
-      // Step 2: Push
-      const pushRes = await apiClient.pushGit({
+      await apiClient.pushGit({
         branch: gitStatus.branch || 'main',
         token: githubToken.trim() || undefined,
       });
@@ -294,7 +393,72 @@ export const CodeWorkspaceView: React.FC = () => {
     }
   };
 
-  // Send message to AI Studio coding assistant
+  // Apply Manual API Preset
+  const handleApplyApiPreset = (preset: (typeof MANUAL_API_PRESETS)[number]) => {
+    setManualFormat(preset.format);
+    setExternalEndpoint(preset.endpoint);
+    setAuthHeaderName(preset.authHeaderName);
+    setExternalModelName(preset.model);
+    setSelectedModel('manual-api');
+    setApiTestResult(null);
+  };
+
+  // Save Manual API Configuration
+  const handleSaveManualConfig = async () => {
+    try {
+      localStorage.setItem('aetheros_manual_api_format', manualFormat);
+      localStorage.setItem('aetheros_manual_api_endpoint', externalEndpoint);
+      localStorage.setItem('aetheros_manual_api_key', externalApiKey);
+      localStorage.setItem('aetheros_manual_api_header', authHeaderName);
+      localStorage.setItem('aetheros_manual_api_model', externalModelName);
+    } catch {}
+
+    try {
+      await apiClient.saveManualApiConfig({
+        format: manualFormat,
+        endpoint: externalEndpoint,
+        apiKey: externalApiKey,
+        authHeaderName,
+        model: externalModelName,
+        temperature,
+        maxTokens,
+      });
+      showNotification('Manual API Connection saved', 'success');
+      setIsConfigModalOpen(false);
+    } catch (err: any) {
+      showNotification(`Saved locally (${err.message})`, 'info');
+      setIsConfigModalOpen(false);
+    }
+  };
+
+  // Test Manual API Connection
+  const handleTestManualApi = async () => {
+    setIsTestingApi(true);
+    setApiTestResult(null);
+    try {
+      const res = await apiClient.testManualApiConnection({
+        format: manualFormat,
+        endpoint: externalEndpoint,
+        apiKey: externalApiKey,
+        authHeaderName,
+        model: externalModelName,
+      });
+      setApiTestResult({
+        success: res.success,
+        message: res.message,
+        latency_ms: res.latency_ms,
+      });
+    } catch (err: any) {
+      setApiTestResult({
+        success: false,
+        message: err.message || 'Connection test failed',
+      });
+    } finally {
+      setIsTestingApi(false);
+    }
+  };
+
+  // Send message to coding assistant
   const handleSendMessage = async (textToSend?: string) => {
     const query = (textToSend || userInput).trim();
     if (!query || isGenerating) return;
@@ -317,10 +481,12 @@ export const CodeWorkspaceView: React.FC = () => {
         message: query,
         model: selectedModel,
         externalApi:
-          selectedModel === 'external-api'
+          selectedModel === 'manual-api'
             ? {
+                format: manualFormat,
                 endpoint: externalEndpoint,
                 apiKey: externalApiKey,
+                authHeaderName,
                 model: externalModelName,
                 temperature,
                 maxTokens,
@@ -365,6 +531,26 @@ export const CodeWorkspaceView: React.FC = () => {
     }
   };
 
+  // Connect a Popular MCP Template
+  const handleConnectTemplate = async (tpl: any) => {
+    try {
+      await apiClient.addMcpServer({
+        templateId: tpl.id,
+        name: tpl.name,
+        description: tpl.description,
+        endpoint: tpl.defaultEndpoint,
+        transport: tpl.transport,
+        provider: tpl.provider,
+        category: tpl.category,
+      });
+      showNotification(`Connected ${tpl.name}`, 'success');
+      await loadMcpData();
+      setMcpModalTab('connected');
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
   // Add custom MCP Server
   const handleAddMcpServer = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -373,15 +559,77 @@ export const CodeWorkspaceView: React.FC = () => {
     try {
       await apiClient.addMcpServer({
         name: newMcpName.trim(),
-        description: 'External Custom MCP Service',
+        provider: newMcpProvider.trim() || 'Custom MCP',
+        description: `Manual ${newMcpTransport.toUpperCase()} MCP Connection`,
         endpoint: newMcpEndpoint.trim(),
+        transport: newMcpTransport,
+        config: newMcpApiKey.trim() ? { API_KEY: newMcpApiKey.trim() } : undefined,
       });
-      showNotification(`Added MCP Server: ${newMcpName}`, 'success');
+      showNotification(`Connected MCP Server: ${newMcpName}`, 'success');
       setNewMcpName('');
       setNewMcpEndpoint('');
+      setNewMcpApiKey('');
+      await loadMcpData();
+      setMcpModalTab('connected');
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  // Save credentials on an MCP server (e.g. Cloudflare API Token, GitHub PAT)
+  const handleSaveServerConfig = async (serverId: string) => {
+    try {
+      await apiClient.configureMcpServer(serverId, serverConfigValues);
+      showNotification('MCP credentials updated', 'success');
+      setConfiguringServerId(null);
+      setServerConfigValues({});
       await loadMcpData();
     } catch (err: any) {
       showNotification(err.message, 'error');
+    }
+  };
+
+  // Toggle MCP server enabled/disabled
+  const handleToggleMcpServer = async (id: string, currentEnabled: boolean) => {
+    try {
+      await apiClient.toggleMcpServer(id, !currentEnabled);
+      await loadMcpData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  // Remove custom MCP server
+  const handleRemoveMcpServer = async (id: string) => {
+    try {
+      await apiClient.removeMcpServer(id);
+      showNotification('Removed custom MCP server', 'info');
+      await loadMcpData();
+    } catch (err: any) {
+      showNotification(err.message, 'error');
+    }
+  };
+
+  // Execute an MCP tool directly
+  const handleRunMcpTool = async (toolName: string, defaultArgs: Record<string, any> = {}) => {
+    setIsExecutingMcpTool(true);
+    setToolExecutionOutput(null);
+    try {
+      const res = await apiClient.executeMcpTool(toolName, defaultArgs);
+      setToolExecutionOutput({
+        tool: toolName,
+        result: res.result,
+        error: res.error,
+      });
+      showNotification(`Executed MCP tool: ${toolName}`, res.success ? 'success' : 'error');
+    } catch (err: any) {
+      setToolExecutionOutput({
+        tool: toolName,
+        result: null,
+        error: err.message,
+      });
+    } finally {
+      setIsExecutingMcpTool(false);
     }
   };
 
@@ -448,21 +696,21 @@ export const CodeWorkspaceView: React.FC = () => {
   return (
     <div className="h-[calc(100vh-5.5rem)] flex flex-col w-full max-w-full overflow-hidden bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xs">
       {/* ======================================================== */}
-      {/* TOP COMMAND BAR (AI Studio Header) */}
+      {/* TOP COMMAND BAR (AetherOS Code Studio Header) */}
       {/* ======================================================== */}
       <div className="h-13 border-b border-slate-200 dark:border-slate-800 px-3 sm:px-4 flex items-center justify-between gap-2 bg-slate-50/70 dark:bg-slate-900/70 shrink-0 min-w-0">
         {/* Left: Title & Repo Git Branch status */}
         <div className="flex items-center gap-3 shrink-0 min-w-0">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-blue-600 text-white flex items-center justify-center shadow-2xs shrink-0">
-              <Sparkles className="w-4 h-4" />
+              <Code2 className="w-4 h-4" />
             </div>
             <div className="hidden sm:block">
-              <span className="text-xs font-bold text-slate-900 dark:text-white">AI Studio Code IDE</span>
+              <span className="text-xs font-bold text-slate-900 dark:text-white">AetherOS Code Studio</span>
             </div>
           </div>
 
-          {/* Git Branch Pill */}
+          {/* Git Branch Badge */}
           <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-mono text-slate-700 dark:text-slate-300">
             <GitBranch className="w-3.5 h-3.5 text-blue-500 shrink-0" />
             <span className="font-semibold">{gitStatus.branch || 'main'}</span>
@@ -480,46 +728,54 @@ export const CodeWorkspaceView: React.FC = () => {
           </div>
         </div>
 
-        {/* Middle: Model Selector Dropdown & External API Config */}
+        {/* Middle: Model Selector, Manual API Connection & MCP Hub */}
         <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <div className="relative">
             <select
               value={selectedModel}
-              onChange={(e) => setSelectedModel(e.target.value)}
-              className="py-1.5 pl-2.5 pr-8 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs truncate max-w-[190px] sm:max-w-none"
+              onChange={(e) => {
+                setSelectedModel(e.target.value);
+                if (e.target.value === 'manual-api') {
+                  setIsConfigModalOpen(true);
+                }
+              }}
+              className="py-1.5 pl-2.5 pr-7 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 cursor-pointer shadow-2xs truncate max-w-[175px] sm:max-w-none"
             >
-              <optgroup label="Google Gemini (AI Studio)">
-                <option value="gemini-3.8-flash">Gemini 3.8 Flash (Default)</option>
-                <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash Lite</option>
-                <option value="gemini-4-argon">Gemini 4 Argon (Reasoning)</option>
-              </optgroup>
-              <optgroup label="Distributed Kaggle Workers">
+              <optgroup label="Distributed Kaggle GPU Fleet">
                 <option value="qwen-2.5-coder-14b">Qwen 2.5 Coder 14B (T4×2)</option>
+                <option value="deepseek-coder-v2-16b">DeepSeek Coder V2 16B</option>
               </optgroup>
-              <optgroup label="Custom Provider">
-                <option value="external-api">External API / Custom Endpoint</option>
+              <optgroup label="Manual API Connection">
+                <option value="manual-api">
+                  Manual API ({externalModelName || 'Custom Endpoint'})
+                </option>
               </optgroup>
             </select>
           </div>
 
-          {/* Model & External API settings button */}
+          {/* Dedicated Manual API Connection Button */}
           <button
             onClick={() => setIsConfigModalOpen(true)}
-            title="Configure External API Endpoint & Parameters"
-            className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:text-blue-600 transition-colors"
+            title="Configure Manual API Connection (OpenAI, Anthropic, Cloudflare, Custom)"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border transition-colors ${
+              selectedModel === 'manual-api'
+                ? 'border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300'
+                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:border-blue-400'
+            }`}
           >
-            <Settings className="w-4 h-4" />
+            <Plug className="w-3.5 h-3.5 text-blue-500" />
+            <span className="hidden md:inline">Manual API</span>
           </button>
 
-          {/* MCP Hub Button */}
+          {/* MCP Connections Hub Button */}
           <button
             onClick={() => setIsMcpModalOpen(true)}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 hover:bg-purple-100 transition-colors"
           >
             <Layers className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">MCP Tools</span>
+            <span className="hidden md:inline">MCP Hub</span>
             <span className="px-1.5 py-0.2 rounded-full bg-purple-200 dark:bg-purple-900 text-[10px] font-mono">
-              {mcpTools.length}
+              {mcpServers.filter((s) => s.is_enabled).length}
             </span>
           </button>
 
@@ -538,7 +794,9 @@ export const CodeWorkspaceView: React.FC = () => {
           <button
             onClick={() => setLayoutMode('split')}
             className={`px-2 py-1 rounded-md font-medium transition-colors ${
-              layoutMode === 'split' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+              layoutMode === 'split'
+                ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600'
+                : 'text-slate-600 dark:text-slate-400'
             }`}
           >
             Split
@@ -546,7 +804,9 @@ export const CodeWorkspaceView: React.FC = () => {
           <button
             onClick={() => setLayoutMode('editor')}
             className={`px-2 py-1 rounded-md font-medium transition-colors ${
-              layoutMode === 'editor' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+              layoutMode === 'editor'
+                ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600'
+                : 'text-slate-600 dark:text-slate-400'
             }`}
           >
             Editor
@@ -554,7 +814,9 @@ export const CodeWorkspaceView: React.FC = () => {
           <button
             onClick={() => setLayoutMode('chat')}
             className={`px-2 py-1 rounded-md font-medium transition-colors ${
-              layoutMode === 'chat' ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600' : 'text-slate-600 dark:text-slate-400'
+              layoutMode === 'chat'
+                ? 'bg-white dark:bg-slate-900 shadow-2xs font-semibold text-blue-600'
+                : 'text-slate-600 dark:text-slate-400'
             }`}
           >
             Chat
@@ -566,14 +828,14 @@ export const CodeWorkspaceView: React.FC = () => {
       {/* MAIN VIEWPORT: 3-PANEL LAYOUT */}
       {/* ======================================================== */}
       <div className="flex-1 flex overflow-hidden min-h-0">
-        {/* PANEL 1: LEFT SIDEBAR (FILE EXPLORER & GIT) */}
+        {/* PANEL 1: LEFT SIDEBAR (FILES, GIT & MCP CONNECTIONS) */}
         {layoutMode !== 'chat' && (
-          <div className="w-60 border-r border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/30 shrink-0 overflow-hidden">
+          <div className="w-64 border-r border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/30 shrink-0 overflow-hidden">
             {/* Left Tabs */}
             <div className="flex border-b border-slate-200 dark:border-slate-800 text-xs font-semibold bg-slate-100/70 dark:bg-slate-900/60">
               <button
                 onClick={() => setActiveLeftTab('files')}
-                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1.5 ${
+                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1 ${
                   activeLeftTab === 'files'
                     ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
@@ -584,23 +846,32 @@ export const CodeWorkspaceView: React.FC = () => {
               </button>
               <button
                 onClick={() => setActiveLeftTab('git')}
-                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1.5 ${
+                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1 ${
                   activeLeftTab === 'git'
                     ? 'border-b-2 border-blue-600 text-blue-600 dark:text-blue-400 bg-white dark:bg-slate-900'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
                 }`}
               >
                 <GitBranch className="w-3.5 h-3.5" />
-                <span>Changes</span>
-                {!gitStatus.clean && (
-                  <span className="w-2 h-2 rounded-full bg-amber-500" />
-                )}
+                <span>Git</span>
+                {!gitStatus.clean && <span className="w-2 h-2 rounded-full bg-amber-500" />}
+              </button>
+              <button
+                onClick={() => setActiveLeftTab('mcp')}
+                className={`flex-1 py-2 text-center transition-colors flex items-center justify-center gap-1 ${
+                  activeLeftTab === 'mcp'
+                    ? 'border-b-2 border-purple-600 text-purple-600 dark:text-purple-400 bg-white dark:bg-slate-900'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                <span>MCP</span>
               </button>
             </div>
 
             {/* Left Content Area */}
             <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {activeLeftTab === 'files' ? (
+              {activeLeftTab === 'files' && (
                 <div className="space-y-0.5">
                   <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                     <span>Repository Explorer</span>
@@ -610,8 +881,9 @@ export const CodeWorkspaceView: React.FC = () => {
                   </div>
                   {repoTree.map(renderTreeNode)}
                 </div>
-              ) : (
-                /* Git Changes Tab */
+              )}
+
+              {activeLeftTab === 'git' && (
                 <div className="space-y-3 text-xs">
                   <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                     <span>Working Tree</span>
@@ -660,8 +932,7 @@ export const CodeWorkspaceView: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Diff Trigger */}
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 px-2">
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 px-2 space-y-1.5">
                     <button
                       onClick={() => setIsGitDiffOpen(true)}
                       className="w-full py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300"
@@ -669,6 +940,67 @@ export const CodeWorkspaceView: React.FC = () => {
                       Inspect Full Git Diff
                     </button>
                   </div>
+                </div>
+              )}
+
+              {activeLeftTab === 'mcp' && (
+                <div className="space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                    <span>Active MCP Servers</span>
+                    <button
+                      onClick={() => setIsMcpModalOpen(true)}
+                      className="text-purple-600 dark:text-purple-400 hover:underline font-semibold text-[11px] normal-case"
+                    >
+                      + Manage
+                    </button>
+                  </div>
+
+                  {mcpServers.map((s) => (
+                    <div
+                      key={s.id}
+                      className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-bold text-slate-900 dark:text-white truncate text-[11px]">
+                          {s.name}
+                        </span>
+                        <span
+                          className={`w-2 h-2 rounded-full shrink-0 ${
+                            s.is_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'
+                          }`}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono">
+                        <span>{s.provider || s.transport}</span>
+                        <span>{s.tools?.length || 0} tools</span>
+                      </div>
+                      <div className="pt-1 flex flex-wrap gap-1">
+                        {(s.tools || []).slice(0, 2).map((t: any) => (
+                          <button
+                            key={t.name}
+                            onClick={() => {
+                              setIsMcpModalOpen(true);
+                              setMcpModalTab('tools');
+                              handleRunMcpTool(t.name, {});
+                            }}
+                            className="px-1.5 py-0.5 rounded bg-purple-50 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-mono text-[10px] hover:bg-purple-100"
+                          >
+                            ▶ {t.name}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <button
+                    onClick={() => {
+                      setIsMcpModalOpen(true);
+                      setMcpModalTab('popular');
+                    }}
+                    className="w-full py-2 px-3 rounded-xl border border-dashed border-purple-300 dark:border-purple-800 text-purple-600 dark:text-purple-400 font-semibold text-xs hover:bg-purple-50/40 dark:hover:bg-purple-950/30 transition-colors"
+                  >
+                    + Add Cloudflare / GitHub / Popular MCP
+                  </button>
                 </div>
               )}
             </div>
@@ -734,7 +1066,6 @@ export const CodeWorkspaceView: React.FC = () => {
 
                 {/* Editor textarea */}
                 <div className="flex-1 overflow-auto flex">
-                  {/* Line Numbers */}
                   <div className="w-10 bg-slate-50 dark:bg-slate-900/50 py-3 text-right pr-2 text-xs font-mono text-slate-400 select-none shrink-0 border-r border-slate-100 dark:border-slate-800/80">
                     {currentTab.content.split('\n').map((_, i) => (
                       <div key={i}>{i + 1}</div>
@@ -757,20 +1088,20 @@ export const CodeWorkspaceView: React.FC = () => {
           </div>
         )}
 
-        {/* PANEL 3: RIGHT AI STUDIO CHAT ASSISTANT */}
+        {/* PANEL 3: RIGHT CODING ASSISTANT */}
         {layoutMode !== 'editor' && (
           <div className="w-full lg:w-[460px] xl:w-[500px] border-l border-slate-200 dark:border-slate-800 flex flex-col bg-slate-50/50 dark:bg-slate-900/20 shrink-0 overflow-hidden">
             {/* Assistant Header */}
             <div className="h-10 border-b border-slate-200 dark:border-slate-800 px-3 flex items-center justify-between text-xs bg-white dark:bg-slate-950 shrink-0">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-blue-600" />
-                <span className="font-semibold text-slate-900 dark:text-white">AI Studio Assistant</span>
-                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300">
-                  {selectedModel}
+              <div className="flex items-center gap-2 min-w-0">
+                <Cpu className="w-4 h-4 text-blue-600 shrink-0" />
+                <span className="font-semibold text-slate-900 dark:text-white truncate">Coding Assistant</span>
+                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 truncate">
+                  {selectedModel === 'manual-api' ? externalModelName || 'manual-api' : selectedModel}
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 shrink-0">
                 <label className="flex items-center gap-1 text-[11px] text-slate-500 cursor-pointer">
                   <input
                     type="checkbox"
@@ -799,8 +1130,10 @@ export const CodeWorkspaceView: React.FC = () => {
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-3 h-3 text-blue-500" />
-                        <span className="font-semibold text-slate-700 dark:text-slate-300">{msg.model || 'AI Studio'}</span>
+                        <Cpu className="w-3 h-3 text-blue-500" />
+                        <span className="font-semibold text-slate-700 dark:text-slate-300">
+                          {msg.model || 'AetherOS Code Engine'}
+                        </span>
                         <span>·</span>
                         <span>{msg.timestamp}</span>
                       </>
@@ -824,7 +1157,7 @@ export const CodeWorkspaceView: React.FC = () => {
                         {msg.toolCalls.map((tc, idx) => (
                           <div key={idx} className="text-[10px] font-mono text-slate-500 flex items-center justify-between">
                             <span className="text-blue-600 dark:text-blue-400">{tc.name}()</span>
-                            <span className="text-emerald-600">success</span>
+                            <span className="text-emerald-600">verified</span>
                           </div>
                         ))}
                       </div>
@@ -856,8 +1189,8 @@ export const CodeWorkspaceView: React.FC = () => {
 
               {isGenerating && (
                 <div className="flex items-center gap-2 p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl text-xs text-slate-500 animate-pulse">
-                  <Sparkles className="w-4 h-4 text-blue-500" />
-                  <span>AI Studio is thinking, reading repo context & synthesizing...</span>
+                  <Cpu className="w-4 h-4 text-blue-500" />
+                  <span>Synthesizing response with MCP context...</span>
                 </div>
               )}
               <div ref={chatBottomRef} />
@@ -866,22 +1199,22 @@ export const CodeWorkspaceView: React.FC = () => {
             {/* Quick Prompt Suggestions */}
             <div className="px-3 py-1.5 border-t border-slate-200 dark:border-slate-800 bg-white/60 dark:bg-slate-950/60 flex items-center gap-1.5 overflow-x-auto text-[11px] shrink-0">
               <button
+                onClick={() => handleSendMessage('Inspect wrangler.toml and Cloudflare D1 schema tables.')}
+                className="whitespace-nowrap px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Cloudflare bindings & D1
+              </button>
+              <button
+                onClick={() => handleSendMessage('Check git status and recent GitHub commits.')}
+                className="whitespace-nowrap px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Git status & commits
+              </button>
+              <button
                 onClick={() => handleSendMessage('Explain the architecture of the open file and suggest improvements.')}
-                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+                className="whitespace-nowrap px-2 py-0.5 rounded-md border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
               >
-                Explain active file
-              </button>
-              <button
-                onClick={() => handleSendMessage('Run git status and explain what changes are uncommitted.')}
-                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                Check git status
-              </button>
-              <button
-                onClick={() => handleSendMessage('Write a complete unit test for this module.')}
-                className="whitespace-nowrap px-2 py-0.5 rounded-full border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
-              >
-                Generate unit test
+                Analyze active file
               </button>
             </div>
 
@@ -903,7 +1236,7 @@ export const CodeWorkspaceView: React.FC = () => {
                       handleSendMessage();
                     }
                   }}
-                  placeholder="Ask AI Studio to write code, inspect repo, or push to git..."
+                  placeholder="Ask Coding Assistant to inspect repo, invoke Cloudflare/GitHub MCP, or write code..."
                   rows={2}
                   className="w-full pl-3 pr-10 py-2.5 text-xs rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                 />
@@ -946,7 +1279,7 @@ export const CodeWorkspaceView: React.FC = () => {
                   required
                   value={commitMessage}
                   onChange={(e) => setCommitMessage(e.target.value)}
-                  placeholder="e.g. feat: integrate AI Studio and MCP tools"
+                  placeholder="e.g. feat: add Manual API connection and Cloudflare/GitHub MCP"
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
@@ -1002,116 +1335,407 @@ export const CodeWorkspaceView: React.FC = () => {
       )}
 
       {/* ======================================================== */}
-      {/* MODAL 2: MCP TOOLS & SERVERS HUB */}
+      {/* MODAL 2: MCP CONNECTIONS HUB (CLOUDFLARE, GITHUB & POPULAR) */}
       {/* ======================================================== */}
       {isMcpModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4 max-h-[85vh] flex flex-col">
+          <div className="w-full max-w-4xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4 max-h-[88vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3 shrink-0">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-purple-600" />
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Model Context Protocol (MCP) Hub
-                </h3>
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-purple-600 text-white flex items-center justify-center">
+                  <Layers className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Model Context Protocol (MCP) Connections Hub
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Connect Cloudflare, GitHub, PostgreSQL, Sentry, Slack, Linear, HuggingFace & custom JSON-RPC servers
+                  </p>
+                </div>
               </div>
               <button onClick={() => setIsMcpModalOpen(false)}>
                 <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4 text-xs">
-              {/* Connected MCP Servers */}
-              <div>
-                <h4 className="font-semibold text-slate-900 dark:text-white mb-2">Connected MCP Servers</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            {/* Modal Sub-Tabs */}
+            <div className="flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 text-xs font-semibold shrink-0">
+              <button
+                onClick={() => setMcpModalTab('connected')}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  mcpModalTab === 'connected'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                Connected MCPs ({mcpServers.length})
+              </button>
+              <button
+                onClick={() => setMcpModalTab('popular')}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  mcpModalTab === 'popular'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                Popular MCP Catalog ({mcpTemplates.length})
+              </button>
+              <button
+                onClick={() => setMcpModalTab('tools')}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  mcpModalTab === 'tools'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                Live Tools & Runner ({mcpTools.length})
+              </button>
+              <button
+                onClick={() => setMcpModalTab('custom')}
+                className={`px-3 py-1.5 rounded-lg transition-colors ${
+                  mcpModalTab === 'custom'
+                    ? 'bg-purple-600 text-white'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                + Manual MCP Endpoint
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4 text-xs pr-1">
+              {/* TAB 1: CONNECTED MCP SERVERS */}
+              {mcpModalTab === 'connected' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {mcpServers.map((s) => (
                     <div
                       key={s.id}
-                      className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 space-y-1.5"
+                      className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950 space-y-2.5 flex flex-col justify-between"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-slate-900 dark:text-white">{s.name}</span>
-                        <span className="px-1.5 py-0.5 text-[10px] rounded bg-emerald-100 dark:bg-emerald-900/60 text-emerald-700 dark:text-emerald-300 font-mono">
-                          {s.transport}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-slate-500">{s.description}</p>
-                      <div className="text-[10px] text-purple-600 dark:text-purple-400 font-mono">
-                        {s.tools?.length || 0} tools available
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Add Custom MCP Server */}
-              <form onSubmit={handleAddMcpServer} className="p-4 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/40 dark:bg-purple-950/20 space-y-3">
-                <h4 className="font-bold text-slate-900 dark:text-white">Add External MCP Server</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input
-                    type="text"
-                    required
-                    value={newMcpName}
-                    onChange={(e) => setNewMcpName(e.target.value)}
-                    placeholder="Server Name (e.g. Sentry MCP)"
-                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
-                  />
-                  <input
-                    type="url"
-                    required
-                    value={newMcpEndpoint}
-                    onChange={(e) => setNewMcpEndpoint(e.target.value)}
-                    placeholder="https://mcp-endpoint.domain/sse"
-                    className="px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono"
-                  />
-                </div>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs"
-                >
-                  Connect External MCP
-                </button>
-              </form>
-
-              {/* Discovered MCP Tools Catalog */}
-              <div>
-                <h4 className="font-semibold text-slate-900 dark:text-white mb-2">Available Discovered Tools ({mcpTools.length})</h4>
-                <div className="space-y-2">
-                  {mcpTools.map((t, idx) => (
-                    <div
-                      key={idx}
-                      className="p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-start justify-between gap-3"
-                    >
-                      <div>
-                        <div className="font-mono font-bold text-blue-600 dark:text-blue-400">
-                          {t.tool?.name}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-900 dark:text-white text-xs">{s.name}</span>
+                            <span className="px-1.5 py-0.5 text-[10px] rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-mono">
+                              {s.provider || s.transport}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => handleToggleMcpServer(s.id, s.is_enabled)}
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
+                                s.is_enabled
+                                  ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300'
+                                  : 'bg-slate-200 dark:bg-slate-800 text-slate-500'
+                              }`}
+                            >
+                              {s.is_enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                            {s.transport !== 'builtin' && (
+                              <button
+                                onClick={() => handleRemoveMcpServer(s.id)}
+                                className="p-1 text-slate-400 hover:text-rose-500"
+                                title="Remove custom MCP"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                        <p className="text-[11px] text-slate-500 mt-0.5">{t.tool?.description}</p>
+
+                        <p className="text-[11px] text-slate-500 leading-relaxed">{s.description}</p>
+
+                        {s.endpoint && (
+                          <div className="text-[10px] font-mono text-slate-400 truncate">
+                            Endpoint: {s.endpoint}
+                          </div>
+                        )}
                       </div>
-                      <span className="text-[10px] font-mono text-slate-400 shrink-0">
-                        {t.serverName}
-                      </span>
+
+                      {/* Credentials Configuration Drawer */}
+                      {s.config_fields && s.config_fields.length > 0 && (
+                        <div className="pt-2 border-t border-slate-200/70 dark:border-slate-800">
+                          {configuringServerId === s.id ? (
+                            <div className="space-y-2 bg-white dark:bg-slate-900 p-2.5 rounded-lg border border-slate-200 dark:border-slate-800">
+                              {s.config_fields.map((field: any) => (
+                                <div key={field.key}>
+                                  <label className="block text-[10px] font-semibold text-slate-600 dark:text-slate-400 mb-0.5">
+                                    {field.label}
+                                  </label>
+                                  <input
+                                    type={field.secret ? 'password' : 'text'}
+                                    placeholder={field.placeholder}
+                                    value={serverConfigValues[field.key] || ''}
+                                    onChange={(e) =>
+                                      setServerConfigValues((prev) => ({
+                                        ...prev,
+                                        [field.key]: e.target.value,
+                                      }))
+                                    }
+                                    className="w-full px-2.5 py-1.5 rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-xs font-mono"
+                                  />
+                                </div>
+                              ))}
+                              <div className="flex justify-end gap-1.5 pt-1">
+                                <button
+                                  type="button"
+                                  onClick={() => setConfiguringServerId(null)}
+                                  className="px-2.5 py-1 rounded text-[11px] text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleSaveServerConfig(s.id)}
+                                  className="px-2.5 py-1 rounded text-[11px] font-semibold bg-purple-600 text-white hover:bg-purple-700"
+                                >
+                                  Save Credentials
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-mono text-slate-500">
+                                {s.configured_keys && s.configured_keys.length > 0
+                                  ? `Configured: ${s.configured_keys.join(', ')}`
+                                  : `${s.tools?.length || 0} tools ready`}
+                              </span>
+                              <button
+                                onClick={() => {
+                                  setConfiguringServerId(s.id);
+                                  setServerConfigValues({});
+                                }}
+                                className="text-[11px] font-semibold text-purple-600 dark:text-purple-400 hover:underline flex items-center gap-1"
+                              >
+                                <Key className="w-3 h-3" />
+                                <span>Configure API Keys</span>
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
-              </div>
+              )}
+
+              {/* TAB 2: POPULAR MCP CATALOG (CLOUDFLARE, GITHUB, POSTGRES, SENTRY, SLACK, LINEAR, HF) */}
+              {mcpModalTab === 'popular' && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {mcpTemplates.map((tpl) => {
+                    const alreadyConnected = mcpServers.some((s) => s.name === tpl.name);
+                    return (
+                      <div
+                        key={tpl.id}
+                        className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-950 flex flex-col justify-between space-y-3"
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-900 dark:text-white">{tpl.name}</span>
+                            <span className="px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/80 text-blue-600 dark:text-blue-400 font-mono text-[10px]">
+                              {tpl.provider}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">{tpl.description}</p>
+                          <div className="text-[10px] font-mono text-slate-400 pt-1">
+                            Endpoint: {tpl.defaultEndpoint} ({tpl.transport.toUpperCase()})
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-slate-200/60 dark:border-slate-800">
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            {tpl.tools?.length || 1} tools · {tpl.configFields?.length || 0} auth keys
+                          </span>
+                          <button
+                            disabled={alreadyConnected}
+                            onClick={() => handleConnectTemplate(tpl)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                              alreadyConnected
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 cursor-default'
+                                : 'bg-purple-600 hover:bg-purple-700 text-white'
+                            }`}
+                          >
+                            {alreadyConnected ? '✓ Connected' : '+ Connect MCP'}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* TAB 3: LIVE MCP TOOLS & INTERACTIVE RUNNER */}
+              {mcpModalTab === 'tools' && (
+                <div className="space-y-4">
+                  {toolExecutionOutput && (
+                    <div className="p-3.5 rounded-xl bg-slate-950 text-slate-100 border border-slate-800 space-y-1.5 font-mono text-[11px]">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-emerald-400">
+                          MCP Tool Output: {toolExecutionOutput.tool}()
+                        </span>
+                        <button
+                          onClick={() => setToolExecutionOutput(null)}
+                          className="text-slate-400 hover:text-white"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      {toolExecutionOutput.error ? (
+                        <div className="text-rose-400">{toolExecutionOutput.error}</div>
+                      ) : (
+                        <pre className="max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-slate-300">
+                          {JSON.stringify(toolExecutionOutput.result, null, 2)}
+                        </pre>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    {mcpTools.map((t, idx) => (
+                      <div
+                        key={idx}
+                        className="p-3 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-950 flex items-start justify-between gap-3"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                              {t.tool?.name}
+                            </span>
+                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-900 text-slate-500">
+                              {t.serverName}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-slate-500">{t.tool?.description}</p>
+                        </div>
+                        <button
+                          disabled={isExecutingMcpTool}
+                          onClick={() => {
+                            const sampleArgs: Record<string, any> = {};
+                            if (t.tool?.name === 'read_file') sampleArgs.path = 'package.json';
+                            if (t.tool?.name === 'search_code') sampleArgs.query = 'mcpManager';
+                            if (t.tool?.name === 'investigate_domain') sampleArgs.target = 'https://example.com';
+                            if (t.tool?.name === 'hf_search_models') sampleArgs.query = 'Qwen2.5-Coder';
+                            handleRunMcpTool(t.tool?.name, sampleArgs);
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/80 hover:bg-purple-100 text-purple-700 dark:text-purple-300 font-mono text-[11px] font-semibold shrink-0"
+                        >
+                          Run
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 4: ADD MANUAL MCP ENDPOINT */}
+              {mcpModalTab === 'custom' && (
+                <form
+                  onSubmit={handleAddMcpServer}
+                  className="p-5 rounded-xl border border-purple-200 dark:border-purple-900/60 bg-purple-50/30 dark:bg-purple-950/20 space-y-4"
+                >
+                  <h4 className="font-bold text-slate-900 dark:text-white text-sm">
+                    Connect Manual MCP Server (HTTP / SSE)
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Server Display Name
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={newMcpName}
+                        onChange={(e) => setNewMcpName(e.target.value)}
+                        placeholder="e.g. Cloudflare Workers MCP"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Provider / Category Label
+                      </label>
+                      <input
+                        type="text"
+                        value={newMcpProvider}
+                        onChange={(e) => setNewMcpProvider(e.target.value)}
+                        placeholder="Cloudflare / GitHub / Custom"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        MCP Server Endpoint URL
+                      </label>
+                      <input
+                        type="url"
+                        required
+                        value={newMcpEndpoint}
+                        onChange={(e) => setNewMcpEndpoint(e.target.value)}
+                        placeholder="https://mcp.yourdomain.com/sse"
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                        Transport Protocol
+                      </label>
+                      <select
+                        value={newMcpTransport}
+                        onChange={(e) => setNewMcpTransport(e.target.value as 'http' | 'sse')}
+                        className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs"
+                      >
+                        <option value="http">HTTP JSON-RPC</option>
+                        <option value="sse">Server-Sent Events (SSE)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Bearer Token / API Secret (Optional)
+                    </label>
+                    <input
+                      type="password"
+                      value={newMcpApiKey}
+                      onChange={(e) => setNewMcpApiKey(e.target.value)}
+                      placeholder="Optional authentication token for this MCP server"
+                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white text-xs font-mono"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs"
+                  >
+                    Connect Manual MCP Server
+                  </button>
+                </form>
+              )}
             </div>
           </div>
         </div>
       )}
 
       {/* ======================================================== */}
-      {/* MODAL 3: MODEL & EXTERNAL API SETTINGS */}
+      {/* MODAL 3: MANUAL API CONNECTION & MODEL CONFIGURATION */}
       {/* ======================================================== */}
       {isConfigModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm animate-in fade-in">
-          <div className="w-full max-w-md bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4">
+          <div className="w-full max-w-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl overflow-hidden p-6 space-y-4 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
               <div className="flex items-center gap-2">
-                <Sliders className="w-4 h-4 text-blue-600" />
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white">
-                  Model & External API Settings
-                </h3>
+                <Plug className="w-4 h-4 text-blue-600" />
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white">
+                    Manual API Connection & Runtime Settings
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Connect OpenAI, Anthropic, Cloudflare Workers AI, OpenRouter, Groq, or custom REST endpoints
+                  </p>
+                </div>
               </div>
               <button onClick={() => setIsConfigModalOpen(false)}>
                 <X className="w-4 h-4 text-slate-400 hover:text-slate-600" />
@@ -1121,12 +1745,12 @@ export const CodeWorkspaceView: React.FC = () => {
             <div className="space-y-4 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Active Model
+                  Execution Mode / Active Model
                 </label>
                 <select
                   value={selectedModel}
                   onChange={(e) => setSelectedModel(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white font-semibold"
                 >
                   {models.map((m) => (
                     <option key={m.id} value={m.id}>
@@ -1136,21 +1760,77 @@ export const CodeWorkspaceView: React.FC = () => {
                 </select>
               </div>
 
-              {selectedModel === 'external-api' && (
-                <div className="space-y-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+              {/* Quick Provider Presets */}
+              <div>
+                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  1-Click Manual API Templates
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                  {MANUAL_API_PRESETS.map((preset) => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => handleApplyApiPreset(preset)}
+                      className={`px-2.5 py-1.5 rounded-lg border text-left text-[11px] font-medium transition-colors ${
+                        externalEndpoint === preset.endpoint && selectedModel === 'manual-api'
+                          ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-semibold'
+                          : 'border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Manual API Connection Fields */}
+              <div className="space-y-3 p-3.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
                     <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                      Endpoint URL
+                      API Payload Format
                     </label>
-                    <input
-                      type="url"
-                      value={externalEndpoint}
-                      onChange={(e) => setExternalEndpoint(e.target.value)}
-                      placeholder="https://api.openai.com/v1/chat/completions"
-                      className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
-                    />
+                    <select
+                      value={manualFormat}
+                      onChange={(e) => setManualFormat(e.target.value)}
+                      className="w-full px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white"
+                    >
+                      <option value="openai_compatible">OpenAI Chat Completions</option>
+                      <option value="anthropic">Anthropic Messages API</option>
+                      <option value="cloudflare_workers_ai">Cloudflare Workers AI</option>
+                      <option value="ollama">Ollama / vLLM Local</option>
+                      <option value="custom_rest">Custom JSON REST</option>
+                    </select>
                   </div>
 
+                  <div>
+                    <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                      Auth Header Name
+                    </label>
+                    <input
+                      type="text"
+                      value={authHeaderName}
+                      onChange={(e) => setAuthHeaderName(e.target.value)}
+                      placeholder="Authorization or x-api-key"
+                      className="w-full px-2.5 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Manual API Endpoint URL
+                  </label>
+                  <input
+                    type="url"
+                    value={externalEndpoint}
+                    onChange={(e) => setExternalEndpoint(e.target.value)}
+                    placeholder="https://api.openai.com/v1/chat/completions"
+                    className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                   <div>
                     <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
                       API Key / Bearer Token
@@ -1159,7 +1839,7 @@ export const CodeWorkspaceView: React.FC = () => {
                       type="password"
                       value={externalApiKey}
                       onChange={(e) => setExternalApiKey(e.target.value)}
-                      placeholder="sk-••••••••••••••••••••••••••••••••••••"
+                      placeholder="sk-••••••••••••••••••••"
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
                     />
                   </div>
@@ -1172,55 +1852,94 @@ export const CodeWorkspaceView: React.FC = () => {
                       type="text"
                       value={externalModelName}
                       onChange={(e) => setExternalModelName(e.target.value)}
-                      placeholder="gpt-4o, claude-3-7-sonnet, deepseek-chat"
+                      placeholder="gpt-4o, claude-3-7-sonnet, qwen2.5-coder"
                       className="w-full px-3 py-2 rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-slate-900 dark:text-white font-mono"
                     />
                   </div>
                 </div>
-              )}
 
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="font-semibold text-slate-700 dark:text-slate-300">
-                    Temperature ({temperature})
-                  </label>
-                  <span className="text-slate-400 text-[10px]">Creativity / Determinism</span>
+                {/* Test Connection Result */}
+                {apiTestResult && (
+                  <div
+                    className={`p-2.5 rounded-lg border text-[11px] flex items-start gap-2 ${
+                      apiTestResult.success
+                        ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-900 text-emerald-800 dark:text-emerald-300'
+                        : 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-900 text-rose-800 dark:text-rose-300'
+                    }`}
+                  >
+                    {apiTestResult.success ? (
+                      <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-600" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-rose-600" />
+                    )}
+                    <span className="break-all">{apiTestResult.message}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    disabled={isTestingApi || !externalEndpoint.trim()}
+                    onClick={handleTestManualApi}
+                    className="px-3 py-1.5 rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 font-semibold text-xs hover:bg-blue-100 flex items-center gap-1.5"
+                  >
+                    <Activity className="w-3.5 h-3.5" />
+                    <span>{isTestingApi ? 'Testing Endpoint...' : 'Test Manual Connection'}</span>
+                  </button>
                 </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={temperature}
-                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                  className="w-full accent-blue-600"
-                />
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
-                  Max Output Tokens
-                </label>
-                <input
-                  type="number"
-                  min={256}
-                  max={8192}
-                  step={256}
-                  value={maxTokens}
-                  onChange={(e) => setMaxTokens(parseInt(e.target.value, 10))}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="font-semibold text-slate-700 dark:text-slate-300">
+                      Temperature ({temperature})
+                    </label>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={temperature}
+                    onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                    className="w-full accent-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                    Max Output Tokens
+                  </label>
+                  <input
+                    type="number"
+                    min={256}
+                    max={8192}
+                    step={256}
+                    value={maxTokens}
+                    onChange={(e) => setMaxTokens(parseInt(e.target.value, 10))}
+                    className="w-full px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white"
+                  />
+                </div>
               </div>
 
-              <button
-                onClick={() => {
-                  setIsConfigModalOpen(false);
-                  showNotification('Configuration saved', 'success');
-                }}
-                className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold"
-              >
-                Apply & Save Settings
-              </button>
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    setSelectedModel('manual-api');
+                    handleSaveManualConfig();
+                  }}
+                  className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold"
+                >
+                  Save & Activate Manual API
+                </button>
+                <button
+                  onClick={handleSaveManualConfig}
+                  className="px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-semibold hover:bg-slate-100 dark:hover:bg-slate-800"
+                >
+                  Save Only
+                </button>
+              </div>
             </div>
           </div>
         </div>

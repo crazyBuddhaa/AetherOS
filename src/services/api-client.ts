@@ -835,10 +835,31 @@ class ApiClient {
     return res.servers || [];
   }
 
-  async addMcpServer(params: { name: string; description: string; endpoint: string; transport?: string }): Promise<any> {
+  async getMcpTemplates(): Promise<any[]> {
+    const res = await this.request<{ success: boolean; templates: any[] }>('/api/mcp/templates');
+    return res.templates || [];
+  }
+
+  async addMcpServer(params: {
+    name?: string;
+    description?: string;
+    endpoint?: string;
+    transport?: string;
+    provider?: string;
+    category?: string;
+    templateId?: string;
+    config?: Record<string, string>;
+  }): Promise<any> {
     return this.request('/api/mcp/servers', {
       method: 'POST',
       body: JSON.stringify(params),
+    });
+  }
+
+  async configureMcpServer(id: string, config: Record<string, string>): Promise<any> {
+    return this.request(`/api/mcp/servers/${id}/configure`, {
+      method: 'POST',
+      body: JSON.stringify({ config }),
     });
   }
 
@@ -867,9 +888,43 @@ class ApiClient {
     });
   }
 
-  // --- GOOGLE AI STUDIO CODING ASSISTANT ---
-  async getAiModels(): Promise<{ models: any[]; gemini_api_key_configured: boolean }> {
+  // --- AETHEROS CODING ASSISTANT & MANUAL API ---
+  async getAiModels(): Promise<{ models: any[]; manual_api_config?: any }> {
     return this.request('/api/ai/models');
+  }
+
+  async saveManualApiConfig(config: {
+    format?: string;
+    endpoint?: string;
+    apiKey?: string;
+    authHeaderName?: string;
+    model?: string;
+    temperature?: number;
+    maxTokens?: number;
+  }): Promise<any> {
+    return this.request('/api/ai/manual-config', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
+  }
+
+  async testManualApiConnection(config: {
+    format?: string;
+    endpoint?: string;
+    apiKey?: string;
+    authHeaderName?: string;
+    model?: string;
+  }): Promise<{
+    success: boolean;
+    latency_ms: number;
+    model_tested: string;
+    endpoint: string;
+    message: string;
+  }> {
+    return this.request('/api/ai/test-connection', {
+      method: 'POST',
+      body: JSON.stringify(config),
+    });
   }
 
   async sendAiStudioChat(params: {

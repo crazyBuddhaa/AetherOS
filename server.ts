@@ -50,6 +50,9 @@ import { mcpManager } from './worker/mcp-service.ts';
 import {
   processAiStudioChat,
   AVAILABLE_MODELS,
+  getSavedManualApiConfig,
+  updateSavedManualApiConfig,
+  testManualApiConnection,
 } from './worker/ai-studio-service.ts';
 import type {
   ActivityLog,
@@ -4034,19 +4037,52 @@ export async function createAetherApp(options: { disableVite?: boolean; persistP
 
   // List all MCP servers
   app.get('/api/mcp/servers', (_req: Request, res: Response) => {
-    res.json({ success: true, servers: mcpManager.getServers() });
+    res.json({
+      success: true,
+      servers: mcpManager.getServers(),
+      templates: mcpManager.getPopularTemplates(),
+    });
   });
 
-  // Add custom external MCP server
+  // List popular MCP server templates
+  app.get('/api/mcp/templates', (_req: Request, res: Response) => {
+    res.json({ success: true, templates: mcpManager.getPopularTemplates() });
+  });
+
+  // Add custom or template-based external MCP server
   app.post('/api/mcp/servers', (req: Request, res: Response) => {
     try {
-      const { name, description, endpoint, transport } = req.body || {};
-      if (!name || !endpoint) {
-        res.status(400).json({ success: false, error: 'Name and endpoint are required' });
+      const { name, description, endpoint, transport, provider, category, templateId, config } = req.body || {};
+      if (!templateId && (!name || !endpoint)) {
+        res.status(400).json({ success: false, error: 'Name and endpoint (or templateId) are required' });
         return;
       }
-      const server = mcpManager.addCustomServer({ name, description, endpoint, transport });
+      const server = mcpManager.addCustomServer({
+        name,
+        description,
+        endpoint,
+        transport,
+        provider,
+        category,
+        templateId,
+        config,
+      });
       res.status(201).json({ success: true, server });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Configure MCP server credentials (e.g., Cloudflare Token, GitHub PAT)
+  app.post('/api/mcp/servers/:id/configure', (req: Request, res: Response) => {
+    try {
+      const { config } = req.body || {};
+      const updated = mcpManager.configureServer(req.params.id, config || {});
+      if (!updated) {
+        res.status(404).json({ success: false, error: 'MCP server not found' });
+        return;
+      }
+      res.json({ success: true, server: updated });
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message });
     }
@@ -4086,19 +4122,39 @@ export async function createAetherApp(options: { disableVite?: boolean; persistP
   });
 
   // ==========================================
-  // 13. Google AI Studio Coding Assistant API
+  // 13. AetherOS Coding Assistant & Manual API
   // ==========================================
 
-  // Get available models
+  // Get available models & saved manual API config
   app.get('/api/ai/models', (_req: Request, res: Response) => {
     res.json({
       success: true,
       models: AVAILABLE_MODELS,
-      gemini_api_key_configured: Boolean(process.env.GEMINI_API_KEY),
+      manual_api_config: getSavedManualApiConfig(),
     });
   });
 
-  // Process AI Studio chat request
+  // Save manual API configuration
+  app.post('/api/ai/manual-config', (req: Request, res: Response) => {
+    try {
+      const updated = updateSavedManualApiConfig(req.body || {});
+      res.json({ success: true, manual_api_config: updated });
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  // Test manual API connection
+  app.post('/api/ai/test-connection', async (req: Request, res: Response) => {
+    try {
+      const result = await testManualApiConnection(req.body || {});
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ success: false, message: err.message });
+    }
+  });
+
+  // Process coding assistant chat request
   app.post('/api/ai/chat', async (req: Request, res: Response) => {
     try {
       const body = req.body || {};

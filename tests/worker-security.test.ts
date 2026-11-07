@@ -2262,7 +2262,7 @@ describe('6. Web Intelligence Agent & Reconnaissance Engine (worker/web-intellig
   });
 });
 
-describe('7. Google AI Studio Coding Workspace, Git & MCP Tools Engine', () => {
+describe('7. AetherOS Code Studio, Manual API Connection, Git & MCP Tools Engine', () => {
   it('reads repo tree and blocks directory traversal attempts outside workspace', async () => {
     const { getRepoTree, readRepoFile } = await import('../worker/repo-git-service.ts');
 
@@ -2298,31 +2298,50 @@ describe('7. Google AI Studio Coding Workspace, Git & MCP Tools Engine', () => {
     assert.ok(typeof diff.diff === 'string');
   });
 
-  it('discovers connected MCP servers and executes MCP tools via standard JSON-RPC dispatch', async () => {
+  it('discovers Cloudflare, GitHub, and popular MCP servers and executes MCP tools via JSON-RPC dispatch', async () => {
     const { mcpManager } = await import('../worker/mcp-service.ts');
 
     const servers = mcpManager.getServers();
-    assert.ok(servers.length >= 4);
+    assert.ok(servers.length >= 6);
+    assert.ok(servers.some((s) => s.id === 'mcp_cloudflare_d1'));
+    assert.ok(servers.some((s) => s.id === 'mcp_github'));
     assert.ok(servers.some((s) => s.id === 'mcp_filesystem'));
     assert.ok(servers.some((s) => s.id === 'mcp_git_ops'));
+
+    const templates = mcpManager.getPopularTemplates();
+    assert.ok(templates.length >= 5);
+    assert.ok(templates.some((t) => t.provider === 'Cloudflare'));
+    assert.ok(templates.some((t) => t.provider === 'GitHub'));
 
     const tools = mcpManager.getAllTools();
     assert.ok(tools.some((t) => t.tool.name === 'read_file'));
     assert.ok(tools.some((t) => t.tool.name === 'git_status'));
     assert.ok(tools.some((t) => t.tool.name === 'd1_list_migrations'));
+    assert.ok(tools.some((t) => t.tool.name === 'cf_inspect_wrangler'));
+    assert.ok(tools.some((t) => t.tool.name === 'github_repo_info'));
+    assert.ok(tools.some((t) => t.tool.name === 'github_list_commits'));
 
     // Execute read_file tool via MCP manager
     const execRes = await mcpManager.executeTool('read_file', { path: 'package.json' });
     assert.equal(execRes.success, true);
     assert.ok(execRes.result.content.includes('react-example'));
 
-    // Execute d1_list_migrations via MCP manager
-    const d1Res = await mcpManager.executeTool('d1_list_migrations', {});
-    assert.equal(d1Res.success, true);
-    assert.ok(Array.isArray(d1Res.result.migrations));
+    // Execute Cloudflare Wrangler & D1 schema tools
+    const cfRes = await mcpManager.executeTool('cf_inspect_wrangler', {});
+    assert.equal(cfRes.success, true);
+    assert.ok(Array.isArray(cfRes.result.d1_databases));
+
+    // Execute GitHub repo info & commit log tools
+    const ghRes = await mcpManager.executeTool('github_repo_info', {});
+    assert.equal(ghRes.success, true);
+    assert.ok(ghRes.result.repository);
+
+    const commitsRes = await mcpManager.executeTool('github_list_commits', { limit: 5 });
+    assert.equal(commitsRes.success, true);
+    assert.ok(Array.isArray(commitsRes.result.commits));
   });
 
-  it('serves AI Studio endpoints /api/repo, /api/mcp, and /api/ai/chat over HTTP', async () => {
+  it('serves Code Studio endpoints /api/repo, /api/mcp, and /api/ai/chat with Manual API support over HTTP', async () => {
     const app = await createAetherApp({ disableVite: true });
     const server = http.createServer(app);
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -2336,27 +2355,46 @@ describe('7. Google AI Studio Coding Workspace, Git & MCP Tools Engine', () => {
       assert.equal(treeData.success, true);
       assert.ok(Array.isArray(treeData.tree));
 
-      // 2. MCP Tools
+      // 2. MCP Tools & Popular Templates
       const mcpRes = await fetch(`http://127.0.0.1:${port}/api/mcp/tools`);
       assert.equal(mcpRes.status, 200);
       const mcpData: any = await mcpRes.json();
       assert.equal(mcpData.success, true);
-      assert.ok(mcpData.tools.length >= 4);
+      assert.ok(mcpData.tools.length >= 6);
 
-      // 3. AI Models
+      const tplRes = await fetch(`http://127.0.0.1:${port}/api/mcp/templates`);
+      assert.equal(tplRes.status, 200);
+      const tplData: any = await tplRes.json();
+      assert.equal(tplData.success, true);
+      assert.ok(tplData.templates.some((t: any) => t.provider === 'Cloudflare'));
+
+      // 3. AI Models & Manual API Config
       const modelsRes = await fetch(`http://127.0.0.1:${port}/api/ai/models`);
       assert.equal(modelsRes.status, 200);
       const modelsData: any = await modelsRes.json();
       assert.equal(modelsData.success, true);
-      assert.ok(modelsData.models.some((m: any) => m.id === 'gemini-3.8-flash'));
+      assert.ok(modelsData.models.some((m: any) => m.id === 'qwen-2.5-coder-14b'));
+      assert.ok(modelsData.models.some((m: any) => m.id === 'manual-api'));
 
-      // 4. AI Studio Chat Dispatch
+      // 4. Save Manual API Config
+      const cfgRes = await fetch(`http://127.0.0.1:${port}/api/ai/manual-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          format: 'openai_compatible',
+          endpoint: 'https://api.openai.com/v1/chat/completions',
+          model: 'gpt-4o',
+        }),
+      });
+      assert.equal(cfgRes.status, 200);
+
+      // 5. Coding Assistant Chat Dispatch
       const chatRes = await fetch(`http://127.0.0.1:${port}/api/ai/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: 'What is the current git status of this repository?',
-          model: 'gemini-3.8-flash',
+          model: 'qwen-2.5-coder-14b',
           currentFile: {
             path: 'src/App.tsx',
             content: '// test content',

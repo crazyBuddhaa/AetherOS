@@ -323,7 +323,7 @@ export const ChatView: React.FC<{ onConvertMessageToTask?: (content: string, age
         </div>
       )}
 
-      {/* Top Studio Control Bar (Google AI Studio & OpenCode style) */}
+      {/* Top Studio Control Bar */}
       <div className="px-4 py-2.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-950/70 flex items-center justify-between gap-4 shrink-0 text-xs">
         <div className="flex items-center gap-3 min-w-0">
           {/* Agent Color Dot & Name */}
@@ -395,7 +395,7 @@ export const ChatView: React.FC<{ onConvertMessageToTask?: (content: string, age
         </div>
       </div>
 
-      {/* Collapsible System Instructions Drawer (AI Studio Style) */}
+      {/* Collapsible System Instructions Drawer */}
       {showSystemPrompt && (
         <div className="px-6 py-3 border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-slate-950/90 text-xs animate-in slide-in-from-top-2 duration-150">
           <div className="flex items-center justify-between mb-1.5">
@@ -752,7 +752,7 @@ export const ChatView: React.FC<{ onConvertMessageToTask?: (content: string, age
             <div ref={messagesEndRef} />
           </div>
 
-          {/* Bottom Prompt Composer (AI Studio / OpenCode style) */}
+          {/* Bottom Prompt Composer */}
           <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/50">
             {/* Attached Files Chips */}
             {attachedFiles.length > 0 && (
@@ -852,7 +852,7 @@ export const ChatView: React.FC<{ onConvertMessageToTask?: (content: string, age
           </div>
         </div>
 
-        {/* Right: Artifact / Code Canvas Panel (AI Studio / OpenCode Canvas) */}
+        {/* Right: Artifact / Code Canvas Panel */}
         {activeArtifact && (
           <div className="w-80 md:w-96 border-l border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-950/80 flex flex-col shrink-0 animate-in slide-in-from-right-4 duration-200">
             {/* Canvas Header */}

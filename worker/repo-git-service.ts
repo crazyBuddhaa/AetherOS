@@ -367,3 +367,65 @@ export async function pushGit(params: {
     throw new Error(sanitizedErr);
   }
 }
+
+/**
+ * Retrieves recent git commit log entries
+ */
+export async function getGitLog(limit = 10): Promise<
+  Array<{
+    hash: string;
+    shortHash: string;
+    author: string;
+    date: string;
+    subject: string;
+  }>
+> {
+  try {
+    const safeLimit = Math.min(50, Math.max(1, Number(limit) || 10));
+    const { stdout } = await execFileAsync(
+      'git',
+      ['log', `-n`, String(safeLimit), '--pretty=format:%H|%h|%an|%ai|%s'],
+      { cwd: WORKSPACE_ROOT }
+    );
+    return stdout
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => {
+        const [hash, shortHash, author, date, ...subjectParts] = line.split('|');
+        return {
+          hash: hash || '',
+          shortHash: shortHash || '',
+          author: author || '',
+          date: date || '',
+          subject: subjectParts.join('|') || '',
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Lists local and remote git branches
+ */
+export async function getGitBranches(): Promise<{
+  current: string;
+  local: string[];
+  remote: string[];
+}> {
+  try {
+    const { stdout: currentOut } = await execFileAsync('git', ['branch', '--show-current'], { cwd: WORKSPACE_ROOT });
+    const { stdout: localOut } = await execFileAsync('git', ['branch', '--format=%(refname:short)'], { cwd: WORKSPACE_ROOT });
+    const { stdout: remoteOut } = await execFileAsync('git', ['branch', '-r', '--format=%(refname:short)'], {
+      cwd: WORKSPACE_ROOT,
+    });
+    return {
+      current: currentOut.trim() || 'main',
+      local: localOut.split('\n').map((s) => s.trim()).filter(Boolean),
+      remote: remoteOut.split('\n').map((s) => s.trim()).filter(Boolean),
+    };
+  } catch {
+    return { current: 'main', local: ['main'], remote: ['origin/main'] };
+  }
+}
+
